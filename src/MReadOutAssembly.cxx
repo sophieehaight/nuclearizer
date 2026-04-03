@@ -50,9 +50,9 @@ MReadOutAssembly::MReadOutAssembly() : MReadOutSequence(), m_EventTimeUTC(0)
 {
   // Construct an instance of MReadOutAssembly
 
-  m_PhysicalEvent = 0; // Set pointer to zero before delete
-  m_Aspect = 0;
- 	m_HasSimAspectInfo = false;
+  m_PhysicalEvent = nullptr;
+  m_SimEvent = nullptr;
+  m_HasSimAspectInfo = false;
  
   Clear();
 }
@@ -75,6 +75,17 @@ MReadOutAssembly::~MReadOutAssembly()
   }
   m_StripHitsTOnly.clear();
 
+  // Delete all DEE Strip hits
+  m_DEEStripHitsLV.clear();
+  m_DEEStripHitsHV.clear();
+  m_DEECrystalHits.clear();
+
+  // Delete all crystal hits
+  for (unsigned int h = 0; h < m_CrystalHits.size(); ++h) {
+    delete m_CrystalHits[h];
+  }
+  m_CrystalHits.clear();
+
   // Delete all hits
   for (unsigned int h = 0; h < m_Hits.size(); ++h) {
     delete m_Hits[h];
@@ -87,18 +98,15 @@ MReadOutAssembly::~MReadOutAssembly()
   }
   m_HitsSim.clear();
 
-
   // Delete all guardring hits
   for (unsigned int h = 0; h < m_GuardringHits.size(); ++h) {
     delete m_GuardringHits[h];
   }
   m_GuardringHits.clear();
 
-  // Delete this instance of MReadOutAssembly
+  // Delete all Events
+  delete m_SimEvent;
   delete m_PhysicalEvent;
-  
-  delete m_Aspect;
-//  mout<<"delete MReadOutAssembly!!\n" ;//debug
 }
 
 
@@ -114,7 +122,6 @@ void MReadOutAssembly::Clear()
   m_ID = g_UnsignedIntNotDefined;
   m_TI = 0;
   m_CL = 0;
-  m_FC = 0;
   m_Time = 0;
   m_EventTimeUTC = 0;
   m_MJD = 0.0;
@@ -138,6 +145,12 @@ void MReadOutAssembly::Clear()
   }
   m_StripHitsTOnly.clear();
 
+  for (unsigned int h = 0; h < m_CrystalHits.size(); ++h) {
+    delete m_CrystalHits[h];
+  }
+  m_CrystalHits.clear();
+
+
   // Delete all hits
   for (unsigned int h = 0; h < m_Hits.size(); ++h) {
     delete m_Hits[h];
@@ -156,33 +169,36 @@ void MReadOutAssembly::Clear()
   }
   m_GuardringHits.clear();
 
-  m_AspectIncomplete = false;
-  m_AspectIncompleteString = "";
-  m_TimeIncomplete = false;
-  m_TimeIncompleteString = "";
-  m_EnergyCalibrationIncomplete_BadStrip = false;
-  m_EnergyCalibrationIncomplete_BadStripString = "";
-  m_EnergyCalibrationIncomplete = false;
-  m_EnergyCalibrationIncompleteString = "";
-  m_EnergyResolutionCalibrationIncomplete = false;
-  m_EnergyResolutionCalibrationIncompleteString = "";
-  m_StripPairingIncomplete = false;
-  m_StripPairingIncompleteString = "";
-  m_LLDEvent = false;
-  m_LLDEventString = "";
-  m_DepthCalibrationIncomplete = false;
-  m_DepthCalibrationIncompleteString = "";
-  m_DepthCalibration_OutofRange = false;
-  m_DepthCalibration_OutofRangeString = ""; 
-
+  // Delete all event flags and associated variables
+  m_EnergyCalibrationError = false;
+  m_EnergyCalibrationErrorString.clear();
+  m_StripPairingError = false;
+  m_StripPairingErrorString.clear();
+  m_DepthCalibrationError = false;
+  m_DepthCalibrationErrorString.clear();
+  m_EventReconstructionError = false;
+  m_EventReconstructionErrorString.clear();
   
+  m_StripPairingReducedChiSquare = -1; 
+ 
+  m_StripHitBelowThreshold_QualityFlag = false;
+  m_StripHitBelowThresholdString_QualityFlag.clear();
+    
+  m_StripPairing_QualityFlag = false;
+  m_StripPairingString_QualityFlag.clear();
+
   m_FilteredOut = false;
 
   delete m_PhysicalEvent;
-  m_PhysicalEvent = 0;
-  
-  delete m_Aspect;
-  m_Aspect = 0;
+  m_PhysicalEvent = nullptr;
+
+  m_DEEStripHitsLV.clear();
+  m_DEEStripHitsHV.clear();
+  m_DEECrystalHits.clear();
+
+  delete m_SimEvent;
+  m_SimEvent = nullptr;
+
 }
 
 
@@ -243,7 +259,9 @@ MStripHit* MReadOutAssembly::GetStripHit(unsigned int i)
   return 0;
 }
 
+
 ////////////////////////////////////////////////////////////////////////////////
+
 
 void MReadOutAssembly::AddStripHit(MStripHit* StripHit)
 {
@@ -286,7 +304,9 @@ MStripHit* MReadOutAssembly::GetStripHitTOnly(unsigned int i)
   return 0;
 }
 
+
 ////////////////////////////////////////////////////////////////////////////////
+
 
 void MReadOutAssembly::AddStripHitTOnly(MStripHit* StripHit)
 {
@@ -319,6 +339,52 @@ void MReadOutAssembly::RemoveStripHitTOnly(unsigned int i)
 ////////////////////////////////////////////////////////////////////////////////
 
 
+MCrystalHit* MReadOutAssembly::GetCrystalHit(unsigned int i)
+{
+  //! Return strip hit i
+
+  if (i < m_CrystalHits.size()) {
+    return m_CrystalHits[i];
+  }
+
+  merr<<"Index out of bounds!"<<show;
+
+  return 0;
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+
+
+void MReadOutAssembly::AddCrystalHit(MCrystalHit* CrystalHit)
+{
+  //! Add a crystal hit
+  // Note: For ACS detectors, DetectorID is a string (e.g., "X0", "X1", "Y0", "Y1", "Z0", "Z1")
+  // so we can't use it with m_InDetector array which expects numeric indices 0-11.
+  // The m_InDetector tracking is primarily for GeD detectors which have numeric IDs.
+  // We skip the m_InDetector tracking for crystal hits.
+  
+  m_CrystalHits.push_back(CrystalHit);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+
+
+void MReadOutAssembly::RemoveCrystalHit(unsigned int i)
+{
+  //! Remove a strip hit
+  if (i < m_CrystalHits.size()) {
+    vector<MCrystalHit*>::iterator it;
+    it = m_CrystalHits.begin()+i;
+    m_CrystalHits.erase(it);
+  }
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+
+
 MHit* MReadOutAssembly::GetHit(unsigned int i) 
 { 
   //! Return hit i
@@ -329,7 +395,7 @@ MHit* MReadOutAssembly::GetHit(unsigned int i)
 
   merr<<"Index out of bounds!"<<show;
 
-  return 0;
+  return nullptr;
 }
 
 
@@ -360,7 +426,6 @@ bool MReadOutAssembly::Parse(MString& Line, int Version)
     return true;
   }
   */
-  // skipping aspect for now
   if (Line.BeginsWith("HT")) {
     MHit* h = new MHit();
     if( h->Parse(Line,1) ){
@@ -442,7 +507,6 @@ bool MReadOutAssembly::GetNextFromDatFile(MFile &F){
 		} else if( Line.BeginsWith("BD") ){
 			SetFilteredOut(true);
 		}
-		//ignoring ASPECT info for right now
 
   }
 
@@ -467,13 +531,10 @@ bool MReadOutAssembly::StreamDat(ostream& S, int Version)
   S<<"ID "<<m_ID<<endl;
   S<<"CL "<<m_Time<<endl;
   S<<"TI "<<m_EventTimeUTC<<endl;
-
+  S<<"QP "<<m_StripPairingReducedChiSquare<<endl; // Read out strip pairing qualiy factor
+    
   for (MSimIA& IA: m_SimIAs) {
     S<<IA.ToSimString()<<endl; 
-  }
-  
-  if (m_Aspect != 0) {
-    m_Aspect->StreamDat(S, Version);
   }
   
   if (Version == 1) {
@@ -488,61 +549,13 @@ bool MReadOutAssembly::StreamDat(ostream& S, int Version)
     for (auto H : m_Hits) {
       H->StreamDat(S, 2);
     }
+  } else if (Version == 3) {
+     for (auto H : m_Hits) {
+       H->StreamDat(S, 3);
+    }
   }
 
-  if (m_AspectIncomplete == true) {
-    S<<"BD AspectIncomplete";
-    if (m_AspectIncompleteString != "") S<<" ("<<m_AspectIncompleteString<<")";
-    S<<endl;
-  }
-  if (m_TimeIncomplete == true) {
-    S<<"BD TimeIncomplete";
-    if (m_TimeIncompleteString != "") S<<" ("<<m_TimeIncompleteString<<")";
-    S<<endl;
-  }
-  if (m_EnergyCalibrationIncomplete_BadStrip == true) {
-    S<<"BD EnergyCalibrationIncomplete_BadStrip";
-    if (m_EnergyCalibrationIncomplete_BadStripString != "") S<<" ("<<m_EnergyCalibrationIncomplete_BadStripString<<")";
-    S<<endl;
-  }
-  if (m_EnergyCalibrationIncomplete == true) {
-    S<<"BD EnergyCalibrationIncomplete";
-    if (m_EnergyCalibrationIncompleteString != "") S<<" ("<<m_EnergyCalibrationIncompleteString<<")";
-    S<<endl;
-  }
-  if (m_EnergyResolutionCalibrationIncomplete == true) {
-    S<<"BD EnergyResolutionCalibrationIncomplete";
-    if (m_EnergyResolutionCalibrationIncompleteString != "") S<<" ("<<m_EnergyResolutionCalibrationIncompleteString<<")";
-    S<<endl;
-  }
-  if (m_StripPairingIncomplete == true) {
-    S<<"BD StripPairingIncomplete";
-    if (m_StripPairingIncompleteString != "") S<<" ("<<m_StripPairingIncompleteString<<")";
-    S<<endl;
-  }
-  if (m_LLDEvent == true) {
-    S<<"BD LLDEvent";
-    if (m_LLDEventString != "") S<<" ("<<m_LLDEventString<<")";
-    S<<endl;
-  }
-  if (m_DepthCalibrationIncomplete == true) {
-    S<<"BD DepthCalibrationIncomplete";
-    if (m_DepthCalibrationIncompleteString != "") S<<" ("<<m_DepthCalibrationIncompleteString<<")";
-    S<<endl;
-  }
-  if (m_DepthCalibration_OutofRange == true) {
-    S<<"BD DepthCalibration_OutofRange";
-    if (m_DepthCalibration_OutofRangeString != "") S<<" ("<<m_DepthCalibration_OutofRangeString<<")";
-    S<<endl;
-  }
-
-  if (m_GuardRingVeto == true) {
-    S<<"BD GR Veto"<<endl;
-  }
-  if (m_ShieldVeto == true) {
-    S<<"BD Shield Veto"<<endl;
-  }
-
+  StreamBDFlags(S);
   
   return true;
 }
@@ -560,14 +573,10 @@ void MReadOutAssembly::StreamEvta(ostream& S)
   S<<"CL "<<m_Time<<endl;
   S<<"TI "<<m_EventTimeUTC<<endl;
 
-  if (m_Aspect != 0) {
-    m_Aspect->StreamEvta(S);
+  if (m_HasSimAspectInfo){
+    S<<"GX "<<m_GalacticPointingXAxisPhi<<" "<<m_GalacticPointingXAxisTheta<<endl;
+    S<<"GZ "<<m_GalacticPointingZAxisPhi<<" "<<m_GalacticPointingZAxisTheta<<endl;
   }
-
-	if (m_HasSimAspectInfo){
-		S<<"GX "<<m_GalacticPointingXAxisPhi<<" "<<m_GalacticPointingXAxisTheta<<endl;
-		S<<"GZ "<<m_GalacticPointingZAxisPhi<<" "<<m_GalacticPointingZAxisTheta<<endl;
-	}
 
   for (MSimIA& IA: m_SimIAs) {
     S<<IA.ToSimString()<<endl; 
@@ -579,61 +588,7 @@ void MReadOutAssembly::StreamEvta(ostream& S)
   
   S<<"CC NStripHits "<<m_StripHits.size()<<endl;
   
-  if (m_AspectIncomplete == true) {
-    S<<"BD AspectIncomplete";
-    if (m_AspectIncompleteString != "") S<<" ("<<m_AspectIncompleteString<<")";
-    S<<endl;
-  }
-  if (m_TimeIncomplete == true) {
-    S<<"BD TimeIncomplete";
-    if (m_TimeIncompleteString != "") S<<" ("<<m_TimeIncompleteString<<")";
-    S<<endl;
-  }
-  if (m_EnergyCalibrationIncomplete_BadStrip == true) {
-    S<<"BD EnergyCalibrationIncomplete_BadStrip";
-    if (m_EnergyCalibrationIncomplete_BadStripString != "") S<<" ("<<m_EnergyCalibrationIncomplete_BadStripString<<")";
-    S<<endl;
-  }
-  if (m_EnergyCalibrationIncomplete == true) {
-    S<<"BD EnergyCalibrationIncomplete";
-    if (m_EnergyCalibrationIncompleteString != "") S<<" ("<<m_EnergyCalibrationIncompleteString<<")";
-    S<<endl;
-  }
-  if (m_EnergyResolutionCalibrationIncomplete == true) {
-    S<<"BD EnergyResolutionCalibrationIncomplete";
-    if (m_EnergyResolutionCalibrationIncompleteString != "") S<<" ("<<m_EnergyResolutionCalibrationIncompleteString<<")";
-    S<<endl;
-  }
-  if (m_StripPairingIncomplete == true) {
-    S<<"BD StripPairingIncomplete";
-    if (m_StripPairingIncompleteString != "") S<<" ("<<m_StripPairingIncompleteString<<")";
-    S<<endl;
-  }
-  if (m_LLDEvent == true) {
-    S<<"BD LLDEvent";
-    if (m_LLDEventString != "") S<<" ("<<m_LLDEventString<<")";
-    S<<endl;
-  }
-  if (m_DepthCalibrationIncomplete == true) {
-    S<<"BD DepthCalibrationIncomplete";
-    if (m_DepthCalibrationIncompleteString != "") S<<" ("<<m_DepthCalibrationIncompleteString<<")";
-    S<<endl;
-  }
-  if (m_DepthCalibration_OutofRange == true) { 
-    S<<"BD DepthCalibration_OutofRange";
-    if (m_DepthCalibration_OutofRangeString != "") S<<" ("<<m_DepthCalibration_OutofRangeString<<")";
-    S<<endl;
-  }
-
-  if (m_GuardRingVeto == true) {
-    S<<"BD GR Veto"<<endl;
-  }
-  if (m_ShieldVeto == true) {
-    S<<"BD Shield Veto"<<endl;
-  }
-
-
-
+  StreamBDFlags(S);
 }
 
 
@@ -649,10 +604,6 @@ void MReadOutAssembly::StreamRoa(ostream& S, bool WithADCs, bool WithTACs, bool 
   S<<"CL "<<m_Time<<endl;
   S<<"TI "<<m_EventTimeUTC<<endl;
 
-  if (m_Aspect != nullptr) {
-    m_Aspect->StreamEvta(S);
-  }
-
   for (MSimIA& IA: m_SimIAs) {
     S<<IA.ToSimString()<<endl; 
   }
@@ -665,20 +616,110 @@ void MReadOutAssembly::StreamRoa(ostream& S, bool WithADCs, bool WithTACs, bool 
     m_StripHits[h]->StreamRoa(S, WithADCs, WithTACs, WithEnergies, WithTimings, WithTemperatures, WithFlags);
     ++Counter;
   }
+  for (unsigned int h = 0; h < m_CrystalHits.size(); ++h) {
+    m_CrystalHits[h]->StreamRoa(S, WithADCs, WithEnergies, WithTemperatures, WithFlags);
+    ++Counter;
+  }
   if (Counter == 0) {
-    S<<"BD No strip hits"<<endl;;
+    S<<"BD No hits"<<endl;;
   }
   
-  // Those are the only BD's relevant for the roa format
-  if (m_AspectIncomplete == true) {
-    S<<"BD AspectIncomplete";
-    if (m_AspectIncompleteString != "") S<<" ("<<m_AspectIncompleteString<<")";
+  StreamBDFlags(S);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+
+
+void MReadOutAssembly::StreamTra(ostream& S)
+{
+  //! Stream the content in MEGAlib's evta format
+
+  S<<"SE"<<endl;
+
+  if (m_PhysicalEvent != nullptr) {
+    S<<m_PhysicalEvent->ToTraString();
+  } else {
+    S<<"ID "<<m_ID<<endl;
+    StreamBDFlags(S);
+  }
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+
+void MReadOutAssembly::StreamBDFlags(ostream& S)
+{
+  // Stream the BD and QA flags
+
+  if (m_EnergyCalibrationError == true) {
+    S<<"BD EnergyCalibrationError";
+    if (m_EnergyCalibrationErrorString.empty() == false) {
+      // iterate through the vectorized error message
+      for (auto i : m_EnergyCalibrationErrorString) {
+        S<<" ("<<i<<")";
+      }
+    }
     S<<endl;
   }
-  if (m_TimeIncomplete == true) {
-    S<<"BD TimeIncomplete";
-    if (m_TimeIncompleteString != "") S<<" ("<<m_TimeIncompleteString<<")";
+   if (m_StripPairingError == true) {
+    S<<"BD StripPairingError";
+    if (m_StripPairingErrorString.empty() == false) {
+      // iterate through the vectorized error message
+      for (auto i : m_StripPairingErrorString) { 
+        S<<" ("<<i<<")";
+      }
+    }
     S<<endl;
+  }
+  if (m_DepthCalibrationError == true) {
+    S<<"BD DepthCalibrationError";
+    if (m_DepthCalibrationErrorString.empty() == false) {
+      // iterate through the vectorized error message
+      for (auto i : m_DepthCalibrationErrorString) {
+        S<<" ("<<i<<")";
+      }
+    }
+    S<<endl;
+  }
+  if (m_EventReconstructionError == true) {
+    S<<"BD EventReconstructionError";
+    if (m_EventReconstructionErrorString.empty() == false) {
+      // iterate through the vectorized error message
+      for (auto i : m_EventReconstructionErrorString) {
+        S<<" ("<<i<<")";
+      }
+    }
+    S<<endl;
+  }
+
+  if (m_StripHitBelowThreshold_QualityFlag == true) {
+    S<<"QA StripHitBelowThreshold";
+    if (m_StripHitBelowThresholdString_QualityFlag.empty() == false) {
+      // iterate through the vectorized error message
+      for (auto i : m_StripHitBelowThresholdString_QualityFlag) {
+        S<<" ("<<i<<")";
+      }
+    }
+    S<<endl;
+  }
+    
+  if (m_StripPairing_QualityFlag == true) {
+    S<<"QA StripPairing";
+    if (m_StripPairingString_QualityFlag.empty() == false) {
+      // iterate through the vectorized error message
+      for (auto i : m_StripPairingString_QualityFlag) {
+        S<<" ("<<i<<")";
+      }
+    }
+    S<<endl;
+  }
+    
+  if (m_GuardRingVeto == true) {
+    S<<"BD GR Veto"<<endl;
+  }
+  if (m_ShieldVeto == true) {
+    S<<"BD Shield Veto"<<endl;
   }
 }
 
@@ -688,18 +729,12 @@ void MReadOutAssembly::StreamRoa(ostream& S, bool WithADCs, bool WithTACs, bool 
 
 bool MReadOutAssembly::IsGood() const
 {
-  //! Returns true if none of the "bad" or "incomplete" falgs has been set
+  //! Returns true if none of the "bad" or "Error" falgs has been set
 
-  if (m_AspectIncomplete == true) return false;
-  if (m_TimeIncomplete == true) return false;
-  if (m_EnergyCalibrationIncomplete_BadStrip == true) return false;
-  if (m_EnergyCalibrationIncomplete == true) return false;
-  if (m_EnergyResolutionCalibrationIncomplete == true) return false;
-  if (m_StripPairingIncomplete == true) return false;
-  if (m_LLDEvent == true) return false;
-  if (m_DepthCalibrationIncomplete == true) return false;
-  if (m_DepthCalibration_OutofRange == true) return false;
-
+  if (m_EnergyCalibrationError == true) return false;
+  if (m_StripPairingError == true) return false;
+  if (m_DepthCalibrationError == true) return false;
+  if (m_EventReconstructionError == true) return false;
 
   if (m_FilteredOut == true) return false;
   
@@ -712,17 +747,12 @@ bool MReadOutAssembly::IsGood() const
 
 bool MReadOutAssembly::IsBad() const
 {
-  //! Returns true if none of the "bad" or "incomplete" falgs has been set
+  //! Returns true if none of the "bad" or "Error" flag has been set
 
-  if (m_AspectIncomplete == true) return true;
-  if (m_TimeIncomplete == true) return true;
-  if (m_EnergyCalibrationIncomplete_BadStrip == true) return true;
-  if (m_EnergyCalibrationIncomplete == true) return true;
-  if (m_EnergyResolutionCalibrationIncomplete == true) return true;
-  if (m_StripPairingIncomplete == true) return true;
-  if (m_LLDEvent == true) return true;
-  if (m_DepthCalibrationIncomplete == true) return true;
-  if (m_DepthCalibration_OutofRange == true) return true;
+  if (m_EnergyCalibrationError == true) return true;
+  if (m_StripPairingError == true) return true;
+  if (m_DepthCalibrationError == true) return true;
+  if (m_EventReconstructionError == true) return true;
 
   if (m_FilteredOut == true) return true;
 
@@ -734,52 +764,12 @@ bool MReadOutAssembly::IsBad() const
 
 bool MReadOutAssembly::IsVeto() const
 {
-  //! Returns true if none of the "bad" or "incomplete" falgs has been set
+  //! Returns true if none of the "bad" or "Error" falgs has been set
 
   if (m_ShieldVeto == true) return true;
   if (m_GuardRingVeto == true) return true;
 
   return false;
-}
-
-
-//////////////////////////////////////////////////////////////////////////////
-
-bool MReadOutAssembly::ComputeAbsoluteTime()
-{
-
-	//the following code assumes that the clock board oscillator is exactly 10 MHz.
-	//in reality there is a +/- 25 ppm tolerance on the frequency, so worst case this
-	//would give an absolute timing error of 25 us.  This can be corrected for by 
-	//comparing the difference between PPS values from sample to sample. The GPS
-	//PPS timing error is much smaller (it is specd at 200 ns )
-
-	/*
-
-	int64_t dt = m_CL - PPS;
-	MTime dT;
-	dT.Set((int)(dt/10000000),(int)((dt % 10000000)*100));
-	MTime UTC(UTCSecond,(long int)0);
-	UTC += dT; //dT can be positive or negative, += operator calls Normalize()
-	m_EventTimeUTC.Set(UTC);
-	return true;
-
-	*/
-
-	if(m_Aspect != 0){
-		int64_t dt = m_CL - m_Aspect->GetPPS();
-		MTime dT;
-		dT.Set((int)(dt/10000000),(int)((dt % 10000000)*100));
-		MTime UTCTimeTrunc = m_Aspect->GetUTCTime();
-		UTCTimeTrunc.Set(UTCTimeTrunc.GetAsSystemSeconds(), (long int)0);
-		UTCTimeTrunc += dT; //dT can be positive or negative, += operator calls Normalize()
-		m_EventTimeUTC.Set(UTCTimeTrunc);
-		//cout << "m_Time = " << m_Time << ", m_EventTimeUTC = " << m_EventTimeUTC << ", dT = " << dT << endl;
-		return true;
-	} else {
-		return false;
-	}
-
 }
 
 

@@ -59,50 +59,50 @@ class MGUIOptionsLoaderSimulations : public MGUIOptions
 
   // protected methods:
  protected:
-
   //! Actions after the Apply or OK button has been pressed
   virtual bool OnApply();
 
 
   // protected members:
  protected:
-
   // private members:
  private:
   //! Select which file to load
   MGUIEFileSelector* m_SimulationFileSelector;
+  //! Select deadtime constants file
+  MGUIEFileSelector* m_DeadtimeFileSelector;
   //! Energy calibration file name
   MGUIEFileSelector* m_EnergyCalibrationFileSelector;
   //! Dead strip file name
   MGUIEFileSelector* m_DeadStripFileSelector;
   //! Thresholds file name
   MGUIEFileSelector* m_ThresholdFileSelector;
-	//! Guard ring thresholds fil ename
-	MGUIEFileSelector* m_GuardRingThresholdFileSelector;
-	//! Charge sharing file name
-	MGUIEFileSelector* m_ChargeSharingFileSelector;
-	//! Crosstalk file name
-	MGUIEFileSelector* m_CrosstalkFileSelector;
-	//! Charge loss file name
-	MGUIEFileSelector* m_ChargeLossFileSelector;
+  //! Guard ring thresholds fil ename
+  MGUIEFileSelector* m_GuardRingThresholdFileSelector;
+  //! Charge sharing file name
+  MGUIEFileSelector* m_ChargeSharingFileSelector;
+  //! Crosstalk file name
+  MGUIEFileSelector* m_CrosstalkFileSelector;
+  //! Charge loss file name
+  MGUIEFileSelector* m_ChargeLossFileSelector;
   //! Depth calibration coefficients file name
   MGUIEFileSelector* m_DepthCalibrationCoeffsFileSelector;
+  //! TAC calibration file name
+  MGUIEFileSelector* m_DepthCalibrationTACCalFileSelector;
   //! Depth calibration splines file name
   MGUIEFileSelector* m_DepthCalibrationSplinesFileSelector;
-	//! Apply fudge factor
-	TGCheckButton* m_ApplyFudgeFactorSelector;
+  //! Apply fudge factor
+  TGCheckButton* m_ApplyFudgeFactorSelector;
   //! Use stop after a maximum number of events
   TGCheckButton* m_StopAfter;
   //! Entry field for the maximum number of accepted events
   MGUIEEntry* m_MaximumAcceptedEvents;
-  
-  
-  
+
+
 #ifdef ___CLING___
  public:
   ClassDef(MGUIOptionsLoaderSimulations, 1) // basic class for dialog windows
 #endif
-
 };
 
 #endif

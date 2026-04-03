@@ -24,6 +24,7 @@
 #include <TGFrame.h>
 #include <TGButton.h>
 #include <TGClient.h>
+#include <TGTab.h>
 
 // MEGAlib libs:
 #include "MGlobal.h"
@@ -61,16 +62,17 @@ class MGUIOptionsEventSaver : public MGUIOptions
 
   // protected methods:
  protected:
-
   //! Actions after the Apply or OK button has been pressed
-	virtual bool OnApply();
+  virtual bool OnApply();
 
 
   // protected members:
  protected:
-
   // private members:
  private:
+  //! The tabs
+  TGTab* m_MainTab;
+
   //! Select the mode
   MGUIERBList* m_Mode;
   //! Select which file to load
@@ -85,7 +87,7 @@ class MGUIOptionsEventSaver : public MGUIOptions
   //! Checkbutton to add a time tag
   TGCheckButton* m_AddTimeTag;
 
-  //! Checkbutton to split or not to split the file 
+  //! Checkbutton to split or not to split the file
   TGCheckButton* m_SplitFile;
   //! Entry field for the time after which to split the file
   MGUIEEntry* m_SplitFileTime;
@@ -111,7 +113,6 @@ class MGUIOptionsEventSaver : public MGUIOptions
  public:
   ClassDef(MGUIOptionsEventSaver, 1) // basic class for dialog windows
 #endif
-
 };
 
 #endif

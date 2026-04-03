@@ -2,12 +2,13 @@
  * MModuleTACcut.cxx
  *
  *
- * Copyright (C) by Andreas Zoglauer.
+ * Copyright (C) by Andreas Zoglauer, Nicole Rodriquez Cavero
+ * Sean Pike
  * All rights reserved.
  *
  *
  * This code implementation is the intellectual property of
- * Andreas Zoglauer.
+ * Andreas Zoglauer, Nicole Rodriquez Cavero, Sean Pike.
  *
  * By copying, distributing or modifying the Program (or any work
  * based on the Program) you indicate your acceptance of this statement,
@@ -35,6 +36,7 @@
 #include "MModule.h"
 #include "MGUIOptionsTACcut.h"
 #include "MGUIExpoTACcut.h"
+#include "MGUIExpoPlotSpectrum.h"
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -144,6 +146,10 @@ void MModuleTACcut::CreateExpos()
     m_ExpoTACcut->SetTACHistogramParameters(DetID, 200, 0, 6000);
   }
   m_Expos.push_back(m_ExpoTACcut);
+  
+  // Set the energy histogram display
+  m_ExpoEnergySpectrum = new MGUIExpoPlotSpectrum(this);
+  m_Expos.push_back(m_ExpoEnergySpectrum);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -158,6 +164,11 @@ bool MModuleTACcut::AnalyzeEvent(MReadOutAssembly* Event)
     int DetID = SH->GetDetectorID();
     int StripID = SH->GetStripID();
     char Side = SH->IsLowVoltageStrip() ? 'l' : 'h';
+    
+    // This captures every single hit before we delete any of them.
+    if (HasExpos()) {
+      m_ExpoEnergySpectrum->AddEnergyInitial(SH->GetEnergy(), SH->IsNearestNeighbor(), SH->IsLowVoltageStrip());
+    }
 
     if (DetID >= m_TACCal.size()) {
       cout<<m_XmlTag<<": Error: DetID "<<DetID<<" is not in TACCal (max det ID: "<<m_TACCal.size()-1<<") - skipping event"<<endl;
@@ -204,11 +215,19 @@ bool MModuleTACcut::AnalyzeEvent(MReadOutAssembly* Event)
       MaxTAC = ns_timing;
     }
   }
+  
+  // 200ns appears to be the minimum acceptable timing value for Nearest Neighbor hits
+  constexpr double c_MinNearestNeighborTiming = 200.0;
 
   for (unsigned int i = 0; i < Event->GetNStripHits();) {
     MStripHit* SH = Event->GetStripHit(i);
     bool Passed = true;
-    if ((SH->HasCalibratedTiming() == true) && (SH->IsGuardRing()==false)) {
+    if ((SH->IsNearestNeighbor() == true) && (SH->HasCalibratedTiming() == false)) { // Nearest neighbor with slow timing
+      double SHTiming = SH->GetTiming();
+      if (SHTiming <= c_MinNearestNeighborTiming) {
+        Passed = false;
+      }
+    } else if ((SH->HasCalibratedTiming() == true) && (SH->IsGuardRing()==false)) {
       double SHTiming = SH->GetTiming();
       int DetID = SH->GetDetectorID();
       int StripID = SH->GetStripID();
@@ -222,11 +241,23 @@ bool MModuleTACcut::AnalyzeEvent(MReadOutAssembly* Event)
         double DisableTime = m_TACCut[DetID][m_SideToIndex[Side]][StripID][2];
         double FlagToEnDelay = m_TACCut[DetID][m_SideToIndex[Side]][StripID][3];
         double FlagDelay = m_TACCut[DetID][m_SideToIndex[Side]][StripID][5];
-        double TotalOffset = ShapingOffset + DisableTime + FlagToEnDelay + FlagDelay;
-        if ((SHTiming > TotalOffset + CoincidenceWindow) || (SHTiming < TotalOffset) || (SHTiming < MaxTAC - CoincidenceWindow)) {
+        // double TotalOffset = ShapingOffset + DisableTime + FlagToEnDelay + FlagDelay; // Changing the total Offset based on data instead
+        // TotalOffset: Earliest time (in ns) after which valid timing hits can appear, start of the allowed timing window
+        constexpr double TotalOffset = 3000.0;
+        // TODO(@NicoleRodriguezCavero): Match TotalOffset with timing contributions from electronics, temporary number is a rough estimate
+        // HardCoincidenceWindow: Width of the valid coincidence region (after TotalOffset) during which multiple strip hits are considered part of the same event
+        constexpr double HardCoincidenceWindow = 600.0;
+        // TODO(@NicoleRodriguezCavero): Coincidence window subject to change pending more analysis
+        // if ((SHTiming > TotalOffset + CoincidenceWindow) || (SHTiming < TotalOffset) || (SHTiming < MaxTAC - CoincidenceWindow)) {
+        //   Passed = false;
+        // } else if (HasExpos()==true) {
+        //   m_ExpoTACcut->AddTAC(DetID, SHTiming);
+        // }
+        if ((SHTiming < TotalOffset) || (SHTiming < MaxTAC - HardCoincidenceWindow)) { //Eliminating the upper boundary condition and just using one cut based on the coincidence window
           Passed = false;
         } else if (HasExpos()==true) {
           m_ExpoTACcut->AddTAC(DetID, SHTiming);
+          m_ExpoEnergySpectrum->AddEnergyFinal(SH->GetEnergy(), SH->IsNearestNeighbor(), SH->IsLowVoltageStrip());
         }
       }
     }

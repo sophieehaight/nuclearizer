@@ -52,32 +52,35 @@ using namespace std;
 #include "MFile.h"
 
 // Nuclearizer libs:
+#include "MFretalonRegistry.h"
+#include "MReadOutDataTAC.h"
+#include "MReadOutDataEnergy.h"
 #include "MReadOutAssembly.h"
 #include "MModule.h"
 #include "MGUIExpoCombinedViewer.h"
 #include "MModuleTransmitterRealta.h"
-#include "MModuleLoaderSimulationsBalloon.h"
 #include "MModuleLoaderSimulationsSMEX.h"
+#include "MModuleLoaderSimulationsSingleDet.h"
+#include "MModuleLoaderSimulationsCosima.h"
 #include "MModuleLoaderMeasurementsROA.h"
 #include "MModuleLoaderMeasurementsHDF.h"
-#include "MModuleReceiverBalloon.h"
-#include "MModuleLoaderMeasurementsBinary.h"
+#include "MModuleLoaderMeasurementsFITS.h"
 #include "MModuleEnergyCalibration.h"
-#include "MModuleEnergyCalibrationUniversal.h"
-#include "MModuleCrosstalkCorrection.h"
-#include "MModuleChargeSharingCorrection.h"
 #include "MModuleDepthCalibration.h"
-#include "MModuleDepthCalibrationB.h"
-#include "MModuleDepthCalibration2024.h"
-#include "MModuleStripPairingGreedy.h"
+#include "MModuleStripPairingMultiRoundChiSquare.h"
 #include "MModuleStripPairingChiSquare.h"
 #include "MModuleEventFilter.h"
 #include "MModuleEventSaver.h"
+#include "MModuleSaverMeasurementsL0.h"
+#include "MModuleSaverMeasurementsFITS.h"
 #include "MModuleResponseGenerator.h"
+#include "MModuleRevan.h"
 #include "MModuleTACcut.h"
-#include "MModuleNearestNeighbor.h"
+// #include "MModuleNearestNeighbor.h"
 #include "MModuleDiagnostics.h"
 #include "MModuleDiagnosticsEnergyPerStrip.h"
+#include "MModuleDEESMEX.h"
+
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -100,6 +103,14 @@ MAssembly::MAssembly()
   
   g_Verbosity = c_Error;
   
+  //! Register new read out data:
+  MReadOutDataTAC TAC;
+  MFretalonRegistry::Instance().Register(TAC);
+
+  MReadOutDataEnergy Energy;
+  MFretalonRegistry::Instance().Register(Energy);
+
+  // Create the supervisor
   m_Supervisor = MSupervisor::GetSupervisor();
   
   // Fixed seed to reproduce DEE results
@@ -111,30 +122,30 @@ MAssembly::MAssembly()
   
   m_Supervisor->UseMultiThreading(true);
   
-  m_Supervisor->AddAvailableModule(new MModuleLoaderSimulationsBalloon());
   m_Supervisor->AddAvailableModule(new MModuleLoaderSimulationsSMEX());
+  m_Supervisor->AddAvailableModule(new MModuleLoaderSimulationsSingleDet());
+  m_Supervisor->AddAvailableModule(new MModuleLoaderSimulationsCosima());
   m_Supervisor->AddAvailableModule(new MModuleLoaderMeasurementsROA());
   m_Supervisor->AddAvailableModule(new MModuleLoaderMeasurementsHDF());
-  m_Supervisor->AddAvailableModule(new MModuleReceiverBalloon());
-  m_Supervisor->AddAvailableModule(new MModuleLoaderMeasurementsBinary());
-  
+  m_Supervisor->AddAvailableModule(new MModuleLoaderMeasurementsFITS());
+
+  m_Supervisor->AddAvailableModule(new MModuleDEESMEX());
+
   m_Supervisor->AddAvailableModule(new MModuleEventFilter());
-  m_Supervisor->AddAvailableModule(new MModuleEnergyCalibrationUniversal());
+  m_Supervisor->AddAvailableModule(new MModuleEnergyCalibration());
 
-  m_Supervisor->AddAvailableModule(new MModuleStripPairingGreedy());
+  m_Supervisor->AddAvailableModule(new MModuleStripPairingMultiRoundChiSquare());
   m_Supervisor->AddAvailableModule(new MModuleStripPairingChiSquare());
-  m_Supervisor->AddAvailableModule(new MModuleChargeSharingCorrection());
   m_Supervisor->AddAvailableModule(new MModuleDepthCalibration());
-  m_Supervisor->AddAvailableModule(new MModuleDepthCalibrationB());
-  m_Supervisor->AddAvailableModule(new MModuleDepthCalibration2024());
-
-  m_Supervisor->AddAvailableModule(new MModuleCrosstalkCorrection());  
   
   m_Supervisor->AddAvailableModule(new MModuleEventSaver());
+  m_Supervisor->AddAvailableModule(new MModuleSaverMeasurementsL0());
+  m_Supervisor->AddAvailableModule(new MModuleSaverMeasurementsFITS());
   m_Supervisor->AddAvailableModule(new MModuleTransmitterRealta());
   m_Supervisor->AddAvailableModule(new MModuleResponseGenerator());
+  m_Supervisor->AddAvailableModule(new MModuleRevan());
   m_Supervisor->AddAvailableModule(new MModuleTACcut());
-  m_Supervisor->AddAvailableModule(new MModuleNearestNeighbor());
+  // m_Supervisor->AddAvailableModule(new MModuleNearestNeighbor());
 
   m_Supervisor->AddAvailableModule(new MModuleDiagnostics());
   m_Supervisor->AddAvailableModule(new MModuleDiagnosticsEnergyPerStrip());
@@ -145,7 +156,7 @@ MAssembly::MAssembly()
   m_Supervisor->SetUIPicturePath("$(NUCLEARIZER)/resource/icons/Nuclearizer.xpm");
   m_Supervisor->SetUISubTitle("The detector calibrator of the COmpton Spectrometer and Imager, COSI");
   m_Supervisor->SetUILeadAuthor("Andreas Zoglauer");
-  m_Supervisor->SetUICoAuthors("Alan Chiu, Alex Lowell, Andreas Zoglauer,\nAres Hernandez, Carolyn Kierans, Clio Sleator,\nDaniel Perez-Becker, Eric Bellm, Jau-Shian Liang,\nMark Bandstra");
+  m_Supervisor->SetUICoAuthors("Robin Anthony-Petersen, Mark Bandstra, Jackie Beechert, \nEric Bellm, Emily Broadbent, Alan Chiu, \nValentina Fioretti, Julian Gerber, Felix Hagemann, \nSophie Haight, Ares Hernandez, Carolyn Kierans, \nHadar Lazar, Jau-Shian Liang, Alex Lowell, \nParshad Patel, Daniel Perez-Becker, Sean Pike \nJarred Roberts, Nicole Rodriguez Cavero, \nField Rogers, Clio Sleator");
 }
 
 
