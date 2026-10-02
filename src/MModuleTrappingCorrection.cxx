@@ -2,8 +2,7 @@
  * MModuleTrappingCorrection.cxx
  *
  *
- * Copyright (C) 2008-2008 by Andreas Zoglauer, Alex Lowell, 
- * 				Sophie Haight, Carolyn Kierans.
+ * Copyright (C) 2008-2008 by Andreas Zoglauer and Sophie Haight.				
  * All rights reserved.
  *
  *
@@ -106,8 +105,8 @@ MModuleTrappingCorrection::~MModuleTrappingCorrection()
 
 bool MModuleTrappingCorrection::Initialize()
 {
-  m_SimCCEFileIsLoaded = LoadSimCCEFile(m_SimCCEFileName);
-  if (m_SimCCEFileIsLoaded == false) {
+  m_TrappingCorrectionFileIsLoaded = LoadTrappingCorrectionFile(m_TrappingCorrectionFileName);
+  if (m_TrappingCorrectionFileIsLoaded == false) {
     return false;
   }
   
@@ -198,9 +197,9 @@ bool MModuleTrappingCorrection::AnalyzeEvent(MReadOutAssembly* Event)
         const DetectorTrappingData& detData = it->second;
 
         // Check depth bounds using this specific detector's CCE grid limits
-        double min_param_depth = std::min(detData.m_Depths.front(), detData.m_Depths.back());
-        double max_param_depth = std::max(detData.m_Depths.front(), detData.m_Depths.back());
-        bool is_depth_out_of_bounds = (depth_val < min_param_depth || depth_val > max_param_depth);
+        double MinParamDepth = std::min(detData.m_Depths.front(), detData.m_Depths.back());
+        double MaxParamDepth = std::max(detData.m_Depths.front(), detData.m_Depths.back());
+        bool IsDepthOutofBounds = (depth_val < MinParamDepth || depth_val > MaxParamDepth);
 
         double rawLVEnergy = LVSH->GetEnergy(); 
 
@@ -209,9 +208,9 @@ bool MModuleTrappingCorrection::AnalyzeEvent(MReadOutAssembly* Event)
         }
 
         double correctedLVEnergy = rawLVEnergy;
-        if (is_depth_out_of_bounds == false) {
+        if (IsDepthOutofBounds == false) {
           correctedLVEnergy = GetSimBasedCorrectedEnergy(depth_val, rawLVEnergy, detData.m_Depths, detData.m_CCEs_LV_e, detData.m_CCEs_LV_h, detData.m_ParamB, detData.m_ParamC);
-        }
+        } 
 
         LVSH->SetEnergy(correctedLVEnergy);    
 
@@ -238,9 +237,9 @@ bool MModuleTrappingCorrection::AnalyzeEvent(MReadOutAssembly* Event)
         const DetectorTrappingData& detData = it->second;
 
         // Check depth bounds using this specific detector's CCE grid limits
-        double min_param_depth = std::min(detData.m_Depths.front(), detData.m_Depths.back());
-        double max_param_depth = std::max(detData.m_Depths.front(), detData.m_Depths.back());
-        bool is_depth_out_of_bounds = (depth_val < min_param_depth || depth_val > max_param_depth);
+        double MinParamDepth = std::min(detData.m_Depths.front(), detData.m_Depths.back());
+        double MaxParamDepth = std::max(detData.m_Depths.front(), detData.m_Depths.back());
+        bool IsDepthOutofBounds = (depth_val < MinParamDepth || depth_val > MaxParamDepth);
     
 
         double rawHVEnergy = HVSH->GetEnergy(); 
@@ -249,7 +248,7 @@ bool MModuleTrappingCorrection::AnalyzeEvent(MReadOutAssembly* Event)
           m_ExpoSpectrum->AddEnergyInitial(rawHVEnergy, HVSH->IsNearestNeighbor(), HVSH->IsLowVoltageStrip());
         }
         double correctedHVEnergy = rawHVEnergy;
-        if (is_depth_out_of_bounds == false) {
+        if (IsDepthOutofBounds == false) {
           correctedHVEnergy = GetSimBasedCorrectedEnergy( depth_val, rawHVEnergy, detData.m_Depths, detData.m_CCEs_HV_e, detData.m_CCEs_HV_h, detData.m_ParamB, detData.m_ParamC);
         }
 
@@ -405,10 +404,10 @@ void MModuleTrappingCorrection::Finalize()
 /////////////////////////////////////////////////////////////////////////////////
 
 
-bool MModuleTrappingCorrection::LoadSimCCEFile(MString FileName)
+bool MModuleTrappingCorrection::LoadTrappingCorrectionFile(MString FileName)
 {
-  MFile SimCCEFile;
-  if (SimCCEFile.Open(FileName) == false) {
+  MFile TrappingCorrectionFile;
+  if (TrappingCorrectionFile.Open(FileName) == false) {
     if (g_Verbosity >= c_Error) {
       cout << m_XmlTag << ": ERROR: Could not open CCE file " << FileName << endl;
     }
@@ -420,7 +419,7 @@ bool MModuleTrappingCorrection::LoadSimCCEFile(MString FileName)
   int currentDetID = -1;
   std::set<MString> SeenTokens; // track detector IDs to avoid duplicates
 
-  while (SimCCEFile.ReadLine(Line)) {
+  while (TrappingCorrectionFile.ReadLine(Line)) {
     Line = Line.Strip();
     if (Line.IsEmpty() == true) continue;
 
@@ -433,7 +432,7 @@ bool MModuleTrappingCorrection::LoadSimCCEFile(MString FileName)
         MString TargetToken = Tokens[1]; 
         if (SeenTokens.find(TargetToken) != SeenTokens.end()) {
           if (g_Verbosity >= c_Error) {
-            cout << "ERROR: Duplicate token '" << TargetToken << "'" << endl;
+            cout << m_XmlTag << ": ERROR: Duplicate token '" << TargetToken << "'" << endl;
           }
           return false; 
         } 
@@ -466,7 +465,7 @@ bool MModuleTrappingCorrection::LoadSimCCEFile(MString FileName)
     }
   }
 
-  SimCCEFile.Close();
+  TrappingCorrectionFile.Close();
   if (m_DetectorParamMap.empty() == true) {
     if (g_Verbosity >= c_Error) {
       cout << m_XmlTag << ": ERROR: Obtained an empty charge trapping parameter map when reading CCE file " << FileName << endl;
@@ -539,9 +538,9 @@ bool MModuleTrappingCorrection::ReadXmlConfiguration(MXmlNode* Node)
 {
   //! Read the configuration data from an XML node
 
-  MXmlNode* SimCCEFileNameNode = Node->GetNode("SimCCEFileName");
-  if (SimCCEFileNameNode != nullptr) {
-    m_SimCCEFileName = SimCCEFileNameNode->GetValue();
+  MXmlNode* TrappingCorrectionFileNameNode = Node->GetNode("TrappingCorrectionFileName");
+  if (TrappingCorrectionFileNameNode != nullptr) {
+    m_TrappingCorrectionFileName = TrappingCorrectionFileNameNode->GetValue();
   }
 
   return true;
@@ -555,7 +554,7 @@ MXmlNode* MModuleTrappingCorrection::CreateXmlConfiguration()
   //! Create an XML node tree from the configuration
 
   MXmlNode* Node = new MXmlNode(0,m_XmlTag);
-  new MXmlNode(Node, "SimCCEFileName", m_SimCCEFileName);
+  new MXmlNode(Node, "TrappingCorrectionFileName", m_TrappingCorrectionFileName);
   
   return Node;
 }
