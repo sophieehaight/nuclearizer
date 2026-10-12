@@ -30,6 +30,7 @@
 #include <ctime>
 #include <cstdio>
 #include <cmath>
+#include <chrono>
 using namespace std;
 
 // ROOT
@@ -76,21 +77,17 @@ using namespace std;
 #include "MModuleTACCalibration.h"
 #include "MAssembly.h"
 #include "MModuleDepthCalibration.h"
+#include "MDGeometryQuest.h"
 
 
-double g_MinCTD = -250;
-// TO DO: Explore widening the CTD range 
-double g_MaxCTD = 250;
-double g_DetectorThickness = 15.0;
 int g_MinCounts = 1000;
 int g_HVStrips = 64;
 int g_LVStrips = 64;
 
 double g_CsPhotopeak = 661.7;
 
-const int NCTDBins = 30;
-// We need NCTDBins + 1 edges to define the boundaries of NCTDBins
-double g_CTDBinEdges[NCTDBins + 1]; 
+// Systematic floor on the photopeak centroid errors (keV), added in quadrature in the joint fit
+double g_SysErrKeV = 0.0;
 
 // Simulation Template Path for Joint Trapping Fitting
 MString g_SimulatedCCEPath = "sim_cce_template.csv";
@@ -101,8 +98,8 @@ public:
   TrappingCorrectionCs137();
   ~TrappingCorrectionCs137();
 
-  // Helper method to look up bin index for a given CTD value
-  int GetCTDBin(double ctd) const;
+  // Helper method to look up the depth bin index for a given detector and depth (cm)
+  int GetDepthBin(int DetID, double DepthCM) const;
 
   // Structs for CCE simulations & experimental points
   struct SimulatedCCE {
@@ -115,8 +112,8 @@ public:
 
   struct ExperimentalPoint {
     int det_id;
-    int ctd_bin;
-    double ctd_midpoint_ns;
+    int depth_bin;
+    double depth_mm; // mean calibrated depth of the events in this bin
     double hv_cce;
     double hv_cce_err;
     double lv_cce;
@@ -145,19 +142,16 @@ public:
                                      const std::string& sim_csv_path,
                                      const std::string& output_csv_path,
                                      const std::string& trapping_param_path,
-                                     double detector_thickness,
-                                     double default_ctd_range = 500.0,
-                                     int detector_id = 0);
+                                     int detector_id = 0,
+                                     double sys_err_kev = 0.0);
 
 private:
-    // Arrange CTD binning on sinusoidal distribution 
-  void InitializeCTDBins();
+  // Set up evenly spaced depth bins per detector from the depth calibration's depth grid
+  void InitializeDepthBins(MModuleDepthCalibration* DepthCalibrator);
 
-  // CTD Range and Bins
-  static const int NCTDBins = 30; // Set to your desired bin count
-  double m_CTDBinEdges[NCTDBins + 1];
-  double m_MinCTD = -250.0;
-  double m_MaxCTD = 250.0;
+  // Depth bins
+  static const int NDepthBins = 30; // Set to your desired bin count
+  map<int, vector<double>> m_DepthBinEdges; // [DetID] -> NDepthBins + 1 edges in cm
 
   bool m_Interrupt;
   MString m_FileName;
@@ -165,6 +159,9 @@ private:
   MString m_TACCalFile;
   MString m_StripMapFile;
   MString m_OutFile;
+  MString m_GeometryFile;
+  MString m_DepthCoeffsFile;
+  MString m_DepthSplinesFile;
   
   bool m_PixelCorrect;
   bool m_MultiRoundStripPairing;
@@ -180,9 +177,6 @@ private:
 TrappingCorrectionCs137::TrappingCorrectionCs137() : m_Interrupt(false)
 {
   gStyle->SetPalette(1, 0);
-
-  // Initialize non-linear CTD binning for the trapping pipeline
-  InitializeCTDBins();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -211,10 +205,11 @@ bool TrappingCorrectionCs137::ParseCommandLine(int argc, char** argv)
   Usage<<"         -m:   strip map file name (.map)"<<endl;
   Usage<<"         -g:   greedy strip pairing (default is chi-square)"<<endl;
   Usage<<"         -n:   exclude nearest neighbors"<<endl;
-  Usage<<"         -ctdmin :   minimum CTD for binning (default -250 ns)"<<endl;
-  Usage<<"         -ctdmax :   maximum CTD for binning (default 250 ns)"<<endl;
-  Usage<<"         --thickness :   detector thickness in mm (default 15 mm)"<<endl;
+  Usage<<"         --geo:   geometry file (.geo.setup)"<<endl;
+  Usage<<"         --coeffs:   depth calibration coefficients file (stretch/offset .csv)"<<endl;
+  Usage<<"         --splines:   depth calibration CTD->depth splines file (.csv)"<<endl;
   Usage<<"         --sim :   simulated CCE file (.csv)"<<endl;
+  Usage<<"         --syserr :   systematic error floor on centroids in keV (default 0)"<<endl;
   Usage<<"         -o:   outfile (default YYYYMMDDHHMMSS)"<<endl;
   Usage<<"         -h:   print this help"<<endl;
   Usage<<endl;
@@ -253,7 +248,7 @@ bool TrappingCorrectionCs137::ParseCommandLine(int argc, char** argv)
 
     // First check if each option has sufficient arguments:
     // Single argument
-    if ((Option == "-i") || (Option == "-o") || (Option == "--emin") || (Option == "--emax") || (Option == "--tcal") || (Option == "-m") || (Option == "--ctdmin") || (Option == "--ctdmax") || (Option == "-thickness") || (Option == "--sim")) {
+    if ((Option == "-i") || (Option == "-o") || (Option == "--emin") || (Option == "--emax") || (Option == "--tcal") || (Option == "-m") || (Option == "--geo") || (Option == "--coeffs") || (Option == "--splines") || (Option == "--sim") || (Option == "--syserr")) {
       if (!((argc > i+1) && (argv[i+1][0] != '-' || isalpha(argv[i+1][1]) == 0))){
         cout<<"Error: Option "<<argv[i][1]<<" needs a second argument!"<<endl;
         cout<<Usage.str()<<endl;
@@ -295,16 +290,24 @@ bool TrappingCorrectionCs137::ParseCommandLine(int argc, char** argv)
       cout<<"Accepting file name: "<<m_StripMapFile<<endl;
     }
 
-    if (Option == "--ctdmin") {
-      g_MinCTD = stod(argv[++i]);
-    } 
+    if (Option == "--geo") {
+      m_GeometryFile = argv[++i];
+      cout<<"Accepting geometry file: "<<m_GeometryFile<<endl;
+    }
 
-    if (Option == "--ctdmax") {
-      g_MaxCTD = stod(argv[++i]);
-    } 
+    if (Option == "--coeffs") {
+      m_DepthCoeffsFile = argv[++i];
+      cout<<"Accepting depth coefficients file: "<<m_DepthCoeffsFile<<endl;
+    }
 
-    if (Option == "--thickness") {
-      g_DetectorThickness = stod(argv[++i]);
+    if (Option == "--splines") {
+      m_DepthSplinesFile = argv[++i];
+      cout<<"Accepting depth splines file: "<<m_DepthSplinesFile<<endl;
+    }
+
+    if (Option == "--syserr") {
+      g_SysErrKeV = stod(argv[++i]);
+      cout<<"Accepting systematic error floor: "<<g_SysErrKeV<<" keV"<<endl;
     }
 
     if (Option == "--sim") {
@@ -329,6 +332,12 @@ bool TrappingCorrectionCs137::ParseCommandLine(int argc, char** argv)
 
   }
 
+  if (m_GeometryFile.IsEmpty() == true || m_DepthCoeffsFile.IsEmpty() == true || m_DepthSplinesFile.IsEmpty() == true) {
+    cout<<"Error: The depth calibration needs a geometry (--geo), coefficients (--coeffs) and splines (--splines) file!"<<endl;
+    cout<<Usage.str()<<endl;
+    return false;
+  }
+
   return true;
 }
 
@@ -344,7 +353,7 @@ bool TrappingCorrectionCs137::Analyze()
 
   if (m_Interrupt == true) return false;
 
-  // [CTD][DetID][] HV Energy, LV Energy] for full detector values
+  // [DepthBin][DetID] -> [HV CCE, HV CCE Err, LV CCE, LV CCE Err, Mean Depth (mm)] for full detector values
   map<int, map<int, vector<double>>> FullDetEndpoints;
 
   // Store the input files
@@ -359,10 +368,22 @@ bool TrappingCorrectionCs137::Analyze()
   // Enable sum of weights squared for TH1 by default
   TH1::SetDefaultSumw2();
 
-  // Detector-level maps organized by [CTDBin][DetID]
-  map<int, map<int, TH1D*>> FullDetCTDHistograms;
+  // Detector-level maps organized by [DepthBin][DetID]
   map<int, map<int, TH1D*>> FullDetHVEnergyHistograms;
   map<int, map<int, TH1D*>> FullDetLVEnergyHistograms;
+
+  // Sum and count of calibrated depths (cm) per [DepthBin][DetID], to evaluate the model at the mean depth of each bin
+  map<int, map<int, double>> DepthSums;
+  map<int, map<int, long>> DepthCounts;
+
+  // Load the geometry, which the depth calibration needs for the detector dimensions
+  MDGeometryQuest* Geometry = new MDGeometryQuest();
+  if (Geometry->ScanSetupFile(m_GeometryFile) == true) {
+    cout << "Geometry " << Geometry->GetName() << " loaded!" << endl;
+  } else {
+    cout << "Error: Unable to load geometry " << m_GeometryFile << endl;
+    return false;
+  }
 
   // Read in the input files and make a list of hdf5 files to calibrate
   if ((InputFile.GetSubString(InputFile.Length() - 4)) == "hdf5") {
@@ -393,6 +414,13 @@ bool TrappingCorrectionCs137::Analyze()
     cout << "Error: Unrecognized file format: " << InputFile << endl;
     return false;
   }
+
+  // --- PROGRESS TRACKING VARIABLES ---
+  long long event_count = 0;
+  long long processed_hits = 0;
+  long long filled_events = 0;
+  auto start_time = std::chrono::steady_clock::now();
+  // -----------------------------------
 
   // Analyze all the data and fill in the histograms
   for (unsigned int f = 0; f < HDFNames.size(); ++f) {
@@ -453,10 +481,15 @@ bool TrappingCorrectionCs137::Analyze()
       Pairing = new MModuleStripPairingChiSquare();
     }
     S->SetModule(Pairing, MNumber);
+    ++MNumber;
 
-    // Create depth calibration module 
-    // Only to import predefined functions, not for depth
+    cout << "Creating depth calibrator" << endl;
     DepthCalibrator = new MModuleDepthCalibration();
+    DepthCalibrator->SetGeometry(Geometry);
+    DepthCalibrator->SetCoeffsFileName(m_DepthCoeffsFile);
+    DepthCalibrator->SetSplinesFileName(m_DepthSplinesFile);
+    S->SetModule(DepthCalibrator, MNumber);
+    ++MNumber;
 
     cout<<"Initializing Loader"<<endl;
     if (Loader->Initialize() == false) return false;
@@ -468,6 +501,11 @@ bool TrappingCorrectionCs137::Analyze()
     if (EventFilter->Initialize() == false) return false;
     cout<<"Initializing Pairing"<<endl;
     if (Pairing->Initialize() == false) return false;
+    cout<<"Initializing Depth calibrator"<<endl;
+    if (DepthCalibrator->Initialize() == false) return false;
+
+    // Depth bins follow the detector thicknesses known to the depth calibration
+    InitializeDepthBins(DepthCalibrator);
 
     bool IsFinished = false;
     MReadOutAssembly* Event = new MReadOutAssembly();
@@ -475,18 +513,12 @@ bool TrappingCorrectionCs137::Analyze()
 
     cout << "Analyzing..." << endl;
 
-  // --- PROGRESS TRACKING VARIABLES ---
-  long long event_count = 0;
-  long long processed_hits = 0;
-  long long filled_events = 0;
-  auto start_time = std::chrono::steady_clock::now();
-  // -----------------------------------
-
   while ((IsFinished == false) && (m_Interrupt == false)) {
     Event->Clear();
     if (Loader->IsReady()) {
 
       Loader->AnalyzeEvent(Event);
+      event_count++;
       TACCalibrator->AnalyzeEvent(Event);
       EnergyCalibrator->AnalyzeEvent(Event);
       bool Unfiltered = EventFilter->AnalyzeEvent(Event);
@@ -495,16 +527,23 @@ bool TrappingCorrectionCs137::Analyze()
         
         Pairing->AnalyzeEvent(Event);
 
-        if ((Event->HasAnalysisProgress(MAssembly::c_StripPairing) == true) && (Unfiltered == true)) {
+        // Returns false for guard ring vetoed events
+        bool DepthCalibrated = DepthCalibrator->AnalyzeEvent(Event);
+
+        if ((DepthCalibrated == true) && (Event->HasAnalysisProgress(MAssembly::c_StripPairing) == true)) {
           
           for (unsigned int h = 0; h < Event->GetNHits(); ++h) {
             processed_hits++;
-            double HVEnergy = 0.0;
-            double LVEnergy = 0.0;
-            vector<MStripHit*> HVStrips;
-            vector<MStripHit*> LVStrips;
 
             MHit* H = Event->GetHit(h);
+
+            // Skip hits without a calibrated depth (no timing, out of range CTD, multiple hits on a strip, ...)
+            if (H->GetNoDepth() == true) continue;
+
+            double HVEnergy = 0.0;
+            double LVEnergy = 0.0;
+            unsigned int NHVStrips = 0;
+            unsigned int NLVStrips = 0;
             int DetID = H->GetStripHit(0)->GetDetectorID();
 
             for (unsigned int sh = 0; sh < H->GetNStripHits(); ++sh) {
@@ -513,46 +552,40 @@ bool TrappingCorrectionCs137::Analyze()
               if ((m_ExcludeNN == false) || ((m_ExcludeNN == true) && (SH->IsNearestNeighbor() == false))) {
                 if (SH->IsLowVoltageStrip() == true) {
                   LVEnergy += SH->GetEnergy();
-                  LVStrips.push_back(SH);
+                  ++NLVStrips;
                 } else {
                   HVEnergy += SH->GetEnergy();
-                  HVStrips.push_back(SH);
+                  ++NHVStrips;
                 }
               }
             }
 
-              if ((HVStrips.size() > 0) && (LVStrips.size() > 0)) {
-                
-                double HVEnergyFraction = 0;
-                double LVEnergyFraction = 0;
-                MStripHit* HVSH = DepthCalibrator->GetDominantStrip(HVStrips, HVEnergyFraction); 
-                MStripHit* LVSH = DepthCalibrator->GetDominantStrip(LVStrips, LVEnergyFraction);
-                
-                if ((LVSH != nullptr) && (HVSH != nullptr) && (LVSH->HasFastTiming() == true) && (HVSH->HasFastTiming() == true)) {
-                  
-                  double CTD = LVSH->GetTiming() - HVSH->GetTiming();
-                  int CTDBin = GetCTDBin(CTD);
-                  if (CTDBin < 0) continue;
+            if ((NHVStrips == 0) || (NLVStrips == 0)) continue;
 
-                TH1D* FullHVHist  = FullDetHVEnergyHistograms[CTDBin][DetID];
-                TH1D* FullLVHist  = FullDetLVEnergyHistograms[CTDBin][DetID];
+            // Local depth in cm, the same quantity MModuleTrappingCorrection uses to apply the correction
+            double DepthCM = H->GetLocalPosition().GetZ();
+            int DepthBin = GetDepthBin(DetID, DepthCM);
+            if (DepthBin < 0) continue;
 
-                if (FullHVHist == nullptr) {
-                  char name[128]; sprintf(name, "HV_Detector%d_bin%d", DetID, CTDBin);
-                  FullHVHist = new TH1D(name, name, (m_MaxEnergy - m_MinEnergy) * 2, m_MinEnergy, m_MaxEnergy);
-                  FullDetHVEnergyHistograms[CTDBin][DetID] = FullHVHist;
-                }
-                if (FullLVHist == nullptr) {
-                  char name[128]; sprintf(name, "LV_Detector%d_bin%d", DetID, CTDBin);
-                  FullLVHist = new TH1D(name, name, (m_MaxEnergy - m_MinEnergy) * 2, m_MinEnergy, m_MaxEnergy);
-                  FullDetLVEnergyHistograms[CTDBin][DetID] = FullLVHist;
-                }
+            TH1D* FullHVHist  = FullDetHVEnergyHistograms[DepthBin][DetID];
+            TH1D* FullLVHist  = FullDetLVEnergyHistograms[DepthBin][DetID];
 
-                FullHVHist->Fill(HVEnergy);
-                FullLVHist->Fill(LVEnergy);
-                filled_events++;
-              }
+            if (FullHVHist == nullptr) {
+              char name[128]; sprintf(name, "HV_Detector%d_bin%d", DetID, DepthBin);
+              FullHVHist = new TH1D(name, name, (m_MaxEnergy - m_MinEnergy) * 2, m_MinEnergy, m_MaxEnergy);
+              FullDetHVEnergyHistograms[DepthBin][DetID] = FullHVHist;
             }
+            if (FullLVHist == nullptr) {
+              char name[128]; sprintf(name, "LV_Detector%d_bin%d", DetID, DepthBin);
+              FullLVHist = new TH1D(name, name, (m_MaxEnergy - m_MinEnergy) * 2, m_MinEnergy, m_MaxEnergy);
+              FullDetLVEnergyHistograms[DepthBin][DetID] = FullLVHist;
+            }
+
+            FullHVHist->Fill(HVEnergy);
+            FullLVHist->Fill(LVEnergy);
+            DepthSums[DepthBin][DetID] += DepthCM;
+            DepthCounts[DepthBin][DetID] += 1;
+            filled_events++;
           }
         }
       }
@@ -560,6 +593,7 @@ bool TrappingCorrectionCs137::Analyze()
 
     IsFinished = Loader->IsFinished();
   }
+  } // end of loop over input files
 
   // --- FINAL SUMMARY PRINT ---
   auto end_time = std::chrono::steady_clock::now();
@@ -576,18 +610,18 @@ bool TrappingCorrectionCs137::Analyze()
 
   // Store depth binned fit results in an output file 
   ofstream MasterFitFile;
-  MasterFitFile.open(m_OutFile + MString("_All_CTDBin_FitResults.txt"));
+  MasterFitFile.open(m_OutFile + MString("_All_DepthBin_FitResults.txt"));
   MasterFitFile << "======================================================================" << endl;
-  MasterFitFile << "MASTER PHOTOPEAK FIT LOG FOR ALL CTD BINS AND DETECTORS" << endl;
+  MasterFitFile << "MASTER PHOTOPEAK FIT LOG FOR ALL DEPTH BINS AND DETECTORS" << endl;
   MasterFitFile << "======================================================================" << endl << endl;
 
   // Vector to hold experimental CCE points for joint fit
   std::vector<ExperimentalPoint> exp_points;
 
   // Do function fitting and recording for full detector outputs
-  for (int c = 0; c < NCTDBins; ++c) {
+  for (int c = 0; c < NDepthBins; ++c) {
 
-    cout << "Processing CTD bin " << c << endl;
+    cout << "Processing depth bin " << c << endl;
   
     for (auto const& [DetID, FullHVHist] : FullDetHVEnergyHistograms[c]) {
   
@@ -623,16 +657,14 @@ bool TrappingCorrectionCs137::Analyze()
           FullDetEndpoints[c][DetID].push_back(lv_cce);      // LV CCE
           FullDetEndpoints[c][DetID].push_back(lv_cce_err);  // LV CCE Err
 
-          // Use double explicitly for the edge lookup and midpoint
-          double edge_lower = static_cast<double>(m_CTDBinEdges[c]);
-          double edge_upper = static_cast<double>(m_CTDBinEdges[c + 1]);
-          double ctd_mid    = (edge_lower + edge_upper) / 2.0;
+          // Evaluate the model at the mean calibrated depth of the events in this bin, not the bin midpoint
+          double mean_depth_mm = 10.0 * DepthSums[c][DetID] / DepthCounts[c][DetID];
+          FullDetEndpoints[c][DetID].push_back(mean_depth_mm); // Mean depth (mm)
 
-          // Ensure ctd_mid is non-zero when pushing to the experimental point vector
-          exp_points.push_back({DetID, c, ctd_mid, hv_cce, hv_cce_err, lv_cce, lv_cce_err});
+          exp_points.push_back({DetID, c, mean_depth_mm, hv_cce, hv_cce_err, lv_cce, lv_cce_err});
 
           MasterFitFile << "------------------------------------------------------------" << endl;
-          MasterFitFile << " DETECTOR ID: " << DetID << "  |  CTD BIN INDEX: " << c << endl;
+          MasterFitFile << " DETECTOR ID: " << DetID << "  |  DEPTH BIN INDEX: " << c << "  |  MEAN DEPTH (mm): " << mean_depth_mm << endl;
           MasterFitFile << "------------------------------------------------------------" << endl;
           
           // Redirect cout to our master file stream
@@ -644,7 +676,7 @@ bool TrappingCorrectionCs137::Analyze()
 
           MasterFitFile << endl << endl; // Add spacing between different bin entries
 
-          TFile HVHistFile(m_OutFile + MString("_Det") + DetID + MString("_CTDbin_") + c + MString("_HVEnergyHist_Illum.root"), "recreate");
+          TFile HVHistFile(m_OutFile + MString("_Det") + DetID + MString("_Depthbin_") + c + MString("_HVEnergyHist_Illum.root"), "recreate");
           TCanvas* HVHistCanvas = new TCanvas();
           HVHistCanvas->cd();
           HVHist->Draw("Hist");
@@ -652,7 +684,7 @@ bool TrappingCorrectionCs137::Analyze()
           HVHistCanvas->Write();
           HVHistFile.Close();
 
-          TFile LVHistFile(m_OutFile + MString("_Det") + DetID + MString("_CTDbin_") + c + MString("_LVEnergyHist_Illum.root"), "recreate");
+          TFile LVHistFile(m_OutFile + MString("_Det") + DetID + MString("_Depthbin_") + c + MString("_LVEnergyHist_Illum.root"), "recreate");
           TCanvas* LVHistCanvas = new TCanvas();
           LVHistCanvas->cd();
           LVHist->Draw("Hist");
@@ -661,10 +693,10 @@ bool TrappingCorrectionCs137::Analyze()
           LVHistFile.Close();
 
         } else {
-          cout << "Fits failed for CTD bin " << c << " Detector " << DetID << endl;
+          cout << "Fits failed for depth bin " << c << " Detector " << DetID << endl;
         }
       } else {
-        cout << "Fewer than " << g_MinCounts << " counts in CTD bin " << c << " Detector " << DetID << endl;
+        cout << "Fewer than " << g_MinCounts << " counts in depth bin " << c << " Detector " << DetID << endl;
       }
     }
   }
@@ -679,41 +711,40 @@ bool TrappingCorrectionCs137::Analyze()
   
   // Header matching updated CCE outputs
   OutputCalFile << "Det_ID" << '\t' 
-                << "CTD_Bin" << '\t' 
-                << "CTD_BinMidpoint_ns" << '\t' 
+                << "Depth_Bin" << '\t' 
+                << "Mean_Depth_mm" << '\t' 
                 << "HV_CCE" << '\t'
                 << "HV_CCE_error" << '\t'
                 << "LV_CCE" << '\t'
                 << "LV_CCE_error" << endl;
   cout << "Parameter file set up" << endl;
 
-  // Loop systematically over each CTD bin first
-  for (int c = 0; c < NCTDBins; ++c) {
+  // Loop systematically over each depth bin first
+  for (int c = 0; c < NDepthBins; ++c) {
 
-    cout << "Writing output tracking parameters for CTD bin: " << c << endl;
+    cout << "Writing output tracking parameters for depth bin: " << c << endl;
 
-    // Calculate the exact midpoint of this specific variable CTD bin
-    double ctdBinMidpoint = (m_CTDBinEdges[c] + m_CTDBinEdges[c + 1]) / 2.0;
-
-    // Loop over the detectors found inside this specific CTD bin
+    // Loop over the detectors found inside this specific depth bin
     for (auto const& [DetID, FitsVec] : FullDetEndpoints[c]) {
       
       double HV_CCE     = 0.0;
       double HV_CCEErr  = 0.0;
       double LV_CCE     = 0.0;
       double LV_CCEErr  = 0.0;
+      double MeanDepth  = 0.0;
 
-      if (FitsVec.size() >= 4) {
+      if (FitsVec.size() >= 5) {
         HV_CCE    = FitsVec[0];
         HV_CCEErr = FitsVec[1];
         LV_CCE    = FitsVec[2];
         LV_CCEErr = FitsVec[3];
+        MeanDepth = FitsVec[4];
       }
 
       // Write row entries corresponding purely to the detector level measurements
       OutputCalFile << DetID << '\t'
                     << c << '\t'
-                    << ctdBinMidpoint << '\t'
+                    << MeanDepth << '\t'
                     << HV_CCE << '\t' 
                     << HV_CCEErr << '\t' 
                     << LV_CCE << '\t'
@@ -728,7 +759,7 @@ bool TrappingCorrectionCs137::Analyze()
   cout << "\nStarting Joint Trapping Fitting and Matrix Generation..." << endl;
   for (int det_id = 0; det_id < 4; ++det_id) {
     std::string out_csv   = "Det_" + std::to_string(det_id) + "_sim_output.csv";
-    std::string param_csv = "Det_" + std::to_string(det_id) + "_trapping_params_" + std::to_string(NCTDBins) + "bins.csv";
+    std::string param_csv = "Det_" + std::to_string(det_id) + "_trapping_params_" + std::to_string(NDepthBins) + "bins.csv";
 
     // Filter experimental points for current detector
     std::vector<ExperimentalPoint> det_exp_points;
@@ -745,14 +776,13 @@ bool TrappingCorrectionCs137::Analyze()
       continue; // Skip to next detector
     }
 
-    FitTrappingParameters(det_exp_points, g_SimulatedCCEPath.Data(), out_csv, param_csv, g_DetectorThickness, (g_MaxCTD - g_MinCTD) , det_id);
+    FitTrappingParameters(det_exp_points, g_SimulatedCCEPath.Data(), out_csv, param_csv, det_id, g_SysErrKeV);
   }
 
   watch.Stop();
   cout << "total time (s): " << watch.CpuTime() << endl;
  
   return true;
-  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////
@@ -929,9 +959,8 @@ void TrappingCorrectionCs137::FitTrappingParameters(const std::vector<Experiment
   const std::string& sim_csv_path,
   const std::string& output_csv_path,
   const std::string& trapping_param_path,
-  double detector_thickness,
-  double default_ctd_range,
-  int detector_id) 
+  int detector_id,
+  double sys_err_kev) 
 {
 // Load Simulation Template
 SimulatedCCE sim = LoadSimulatedCCE(sim_csv_path);
@@ -985,8 +1014,8 @@ g_lv_e.Sort(); g_lv_h.Sort();
 double z_min_sim = sim.z_depth_mm.front();
 double z_max_sim = sim.z_depth_mm.back();
 
-// Depth conversion factor (CTD ns -> Depth mm)
-double ctd_to_mm_factor = (detector_thickness / 2.0) / -(default_ctd_range / 2.0);
+// Systematic floor on the centroid errors, added in quadrature
+const double sys_cce = sys_err_kev / g_CsPhotopeak;
 
 // Chi2 cost fuction to fit trapping parameters
 auto chi2_lambda = [&](const double* p) -> double {
@@ -998,7 +1027,8 @@ auto chi2_lambda = [&](const double* p) -> double {
   double C    = p[3];
 
   for (const auto& pt : det_exp_data) {
-    double z = pt.ctd_midpoint_ns * ctd_to_mm_factor;
+    // Calibrated depth from MModuleDepthCalibration (mm), same coordinate as the simulation template
+    double z = pt.depth_mm;
 
     // If the measured depth is outide of simulation bounds assign it the closest CCE w/i the simulation
     if (z < z_min_sim) z = z_min_sim;
@@ -1014,9 +1044,6 @@ auto chi2_lambda = [&](const double* p) -> double {
     double pred_hv = A_hv * (1.0 - B * (1.0 - e_hv)) * (1.0 - C * (1.0 - h_hv));
     double pred_lv = A_lv * (1.0 - B * (1.0 - e_lv)) * (1.0 - C * (1.0 - h_lv));
 
-    //DEBUG: add systematic error to help fitter converge
-    double g_SysErrKeV = 0.0;  // Systematic error in keV, can be adjusted based on calibration
-    const double sys_cce = g_SysErrKeV / g_CsPhotopeak;   // new option, e.g. 0.2 keV
     double err_hv = std::hypot(pt.hv_cce_err, sys_cce);
     double err_lv = std::hypot(pt.lv_cce_err, sys_cce);
 
@@ -1060,17 +1087,35 @@ fitter.Config().ParSettings(2).SetLimits(0.0, 5.0);
 fitter.Config().ParSettings(3).SetLimits(0.0, 2.0);
 
 fitter.SetFCN(fcn);
-// // bool ok = fitter.FitFCN();
-// fitter.Result().Print(std::cout);   // check status/EDM/covariance
 
-//DEBUG??
+// Run the minimization -- SetFCN alone does not fit, and Result() asserts if no fit was run
+bool ok = fitter.FitFCN();
+if (!ok) {
+  std::cerr << "[Error] Joint trapping fit failed for Detector " << detector_id << std::endl;
+  return;
+}
 
 ///////////////////////// Printed fit statistics /////////////////////////////////////////
 
 // Extract Chi2 manually if fitter result still reports -1
 const ROOT::Fit::FitResult& result = fitter.Result();
+result.Print(std::cout);   // status, EDM, parameter errors
+if (!result.IsValid()) {
+  std::cerr << "[Warning] Fit result not valid (status " << result.Status() << ") for Detector " << detector_id << std::endl;
+}
 std::vector<double> popt(4, 0.0);
 for (int i = 0; i < 4; ++i) popt[i] = result.Parameter(i);
+
+// Residual pulls vs. depth: random scatter -> errors underestimated (floor justified), structure -> model or depth mismatch
+std::cout << "  depth_mm   pull_HV   pull_LV" << std::endl;
+for (const auto& pt : det_exp_data) {
+  double z = std::clamp(pt.depth_mm, z_min_sim, z_max_sim);
+  double pred_hv = popt[0] * (1 - popt[2]*(1 - g_hv_e.Eval(z))) * (1 - popt[3]*(1 - g_hv_h.Eval(z)));
+  double pred_lv = popt[1] * (1 - popt[2]*(1 - g_lv_e.Eval(z))) * (1 - popt[3]*(1 - g_lv_h.Eval(z)));
+  std::cout << "  " << pt.depth_mm << "  "
+            << (hv_ok(pt) ? (pt.hv_cce - pred_hv) / std::hypot(pt.hv_cce_err, sys_cce) : NAN) << "  "
+            << (lv_ok(pt) ? (pt.lv_cce - pred_lv) / std::hypot(pt.lv_cce_err, sys_cce) : NAN) << std::endl;
+}
 
 double calculated_chi2 = chi2_lambda(popt.data());
 int n_points = n_hv + n_lv; // Total data points (HV + LV)
@@ -1078,6 +1123,7 @@ int ndf = n_points - 4;
 
 std::cout << "\n================ JOINT FIT RESULTS ================" << std::endl;
 std::cout << "  Detector ID : " << detector_id << std::endl;
+std::cout << "  Sys. floor  : " << sys_err_kev << " keV" << std::endl;
 std::cout << "  A_hv        : " << popt[0] << std::endl;
 std::cout << "  A_lv        : " << popt[1] << std::endl;
 std::cout << "  B (e-trap)  : " << popt[2] << std::endl;
@@ -1093,32 +1139,39 @@ SaveTrappingParamFile(output_csv_path, trapping_param_path, popt, sim, detector_
 
 ///////////////////////////////////////////////////////////////////////////////////
 
-void TrappingCorrectionCs137::InitializeCTDBins() {
-  double center = (m_MaxCTD + m_MinCTD) / 2.0;
-  double halfWidth = (m_MaxCTD - m_MinCTD) / 2.0;
-
-  for (int i = 0; i <= NCTDBins; ++i) {
-    double fraction = -1.0 + 2.0 * double(i) / double(NCTDBins);
-    double nonLinearFraction = std::sin(fraction * M_PI / 2.0); 
-    m_CTDBinEdges[i] = center + halfWidth * nonLinearFraction;
+void TrappingCorrectionCs137::InitializeDepthBins(MModuleDepthCalibration* DepthCalibrator)
+{
+  // Evenly spaced depth bins spanning each detector's depth grid (cm), which runs from -thickness/2 to +thickness/2
+  m_DepthBinEdges.clear();
+  for (auto const& [DetID, Grid] : DepthCalibrator->GetDepthGrid()) {
+    if (Grid.size() < 2) continue;
+    double MinDepth = Grid.front();
+    double MaxDepth = Grid.back();
+    vector<double> Edges;
+    for (int i = 0; i <= NDepthBins; ++i) {
+      Edges.push_back(MinDepth + (MaxDepth - MinDepth) * double(i) / double(NDepthBins));
+    }
+    m_DepthBinEdges[DetID] = Edges;
+    cout << "Detector " << DetID << ": " << NDepthBins << " depth bins from " << MinDepth << " cm to " << MaxDepth << " cm" << endl;
   }
 }
 
 //////////////////////////////////////////////////////////////////////////////////
 
-int TrappingCorrectionCs137::GetCTDBin(double ctd) const 
+int TrappingCorrectionCs137::GetDepthBin(int DetID, double DepthCM) const 
 {
-  // Hard bounds check against member bounds
-  if (ctd < m_MinCTD || ctd >= m_MaxCTD) return -1;
+  auto Iter = m_DepthBinEdges.find(DetID);
+  if (Iter == m_DepthBinEdges.end()) return -1;
+  const vector<double>& Edges = Iter->second;
 
-  // Binary search on class member array m_CTDBinEdges
-  auto it = std::upper_bound(m_CTDBinEdges, m_CTDBinEdges + NCTDBins + 1, ctd);
-  
-  // Calculate bin index from iteration offset
-  int bin = std::distance(m_CTDBinEdges, it) - 1;
+  // Hard bounds check (the upper edge is included so hits at the electrode aren't dropped)
+  if (DepthCM < Edges.front() || DepthCM > Edges.back()) return -1;
+
+  // Binary search on the bin edges
+  int bin = std::distance(Edges.begin(), std::upper_bound(Edges.begin(), Edges.end(), DepthCM)) - 1;
 
   // Guard against edge cases at boundaries
-  if (bin >= NCTDBins) bin = NCTDBins - 1;
+  if (bin >= NDepthBins) bin = NDepthBins - 1;
   if (bin < 0) bin = 0;
 
   return bin;
@@ -1156,11 +1209,10 @@ int main(int argc, char** argv)
   signal(SIGINT, CatchSignal);
 
   // Initialize global MEGAlib variables
-  MGlobal::Initialize("TrappingCorrectionCs137", "A standalone program to determine CTD-dependent shifts of the Cs137 peak");
+  MGlobal::Initialize("TrappingCorrectionCs137", "A standalone program to determine depth-dependent shifts of the Cs137 peak");
 
   TApplication TrappingCorrectionApp("TrappingCorrectionApp", 0, 0);
 
-  // Instantiates class and runs InitializeCTDBins() automatically
   g_Prg = new TrappingCorrectionCs137();
 
   if (g_Prg->ParseCommandLine(argc, argv) == false) {
