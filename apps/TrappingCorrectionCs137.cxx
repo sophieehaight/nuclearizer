@@ -25,6 +25,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <map>
+#include <set>
 #include <vector>
 #include <algorithm>
 #include <ctime>
@@ -128,7 +129,8 @@ public:
   TF1* GeneratePhotopeakFunction();
 
   // Load Sim CCE files
-  SimulatedCCE LoadSimulatedCCE(const std::string& sim_csv_path);
+  // Lines after "### <detector ID>" belong to that detector; lines before any such header to detector 0
+  map<int, SimulatedCCE> LoadSimulatedCCE(const std::string& sim_csv_path, bool& HasDetectorHeaders);
   
   // Output trapping paramters and simulated CCE insto csv file
   void SaveTrappingParamFile(const std::string& output_filepath,
@@ -137,11 +139,19 @@ public:
                                  const SimulatedCCE& sim,
                                  int detector_id);
 
+  // Write one "### <detector ID>" block in the format MModuleTrappingCorrection reads
+  void WriteTrappingParamBlock(std::ostream& out,
+                               const std::vector<double>& popt,
+                               const SimulatedCCE& sim,
+                               int detector_id);
+
  // Fit experimental CCE to simulated CCE to get trapping parameters
-  void FitTrappingParameters(const std::vector<ExperimentalPoint>& exp_data,
-                                     const std::string& sim_csv_path,
+  // Returns false if no fit result could be obtained; on success popt holds A_HV, A_LV, B, C
+  bool FitTrappingParameters(const std::vector<ExperimentalPoint>& exp_data,
+                                     const SimulatedCCE& sim,
                                      const std::string& output_csv_path,
                                      const std::string& trapping_param_path,
+                                     std::vector<double>& popt,
                                      int detector_id = 0,
                                      double sys_err_kev = 0.0);
 
@@ -760,9 +770,43 @@ bool TrappingCorrectionCs137::Analyze()
   
   // ---- Fit experimental CCE to simulated CCE to extract trapping parameters for each detector ----
   cout << "\nStarting Joint Trapping Fitting and Matrix Generation..." << endl;
-  for (int det_id = 0; det_id < 4; ++det_id) {
+
+  // Load the simulation templates for all detectors
+  bool HasDetectorHeaders = false;
+  map<int, SimulatedCCE> SimTemplates = LoadSimulatedCCE(g_SimulatedCCEPath.Data(), HasDetectorHeaders);
+  if (SimTemplates.empty()) {
+    std::cerr << "[FATAL] Simulation template is empty or file not found at: " << g_SimulatedCCEPath << std::endl;
+    return false;
+  }
+  if (HasDetectorHeaders == false) {
+    cout << "Simulation template has no \"### <detector ID>\" headers: using it for all detectors" << endl;
+  }
+
+  // All detectors with experimental points
+  std::set<int> DetectorIDs;
+  for (const auto& pt : exp_points) {
+    DetectorIDs.insert(pt.det_id);
+  }
+
+  // Combined trapping parameter file for all detectors, readable by MModuleTrappingCorrection
+  std::string combined_csv = std::string(m_OutFile.Data()) + "_trapping_params_" + std::to_string(NDepthBins) + "bins.csv";
+  std::ofstream CombinedFile(combined_csv, std::ios::out | std::ios::trunc);
+  if (!CombinedFile.is_open()) {
+    std::cerr << "[Error] Cannot create output file: " << combined_csv << std::endl;
+    return false;
+  }
+  int NFittedDetectors = 0;
+
+  for (int det_id : DetectorIDs) {
     std::string out_csv   = "Det_" + std::to_string(det_id) + "_sim_output.csv";
     std::string param_csv = "Det_" + std::to_string(det_id) + "_trapping_params_" + std::to_string(NDepthBins) + "bins.csv";
+
+    // Pick this detector's simulation template (a template without detector headers applies to all detectors)
+    auto SimIter = (HasDetectorHeaders == true) ? SimTemplates.find(det_id) : SimTemplates.find(0);
+    if (SimIter == SimTemplates.end() || SimIter->second.z_depth_mm.empty()) {
+      std::cerr << "[Error] No simulation template for Detector " << det_id << " in " << g_SimulatedCCEPath << ". Skipping joint fit." << std::endl;
+      continue;
+    }
 
     // Filter experimental points for current detector
     std::vector<ExperimentalPoint> det_exp_points;
@@ -772,15 +816,16 @@ bool TrappingCorrectionCs137::Analyze()
       }
     }
 
-    // STOP if no points were successfully extracted for this detector!
-    if (det_exp_points.empty()) {
-      std::cerr << "[Error] No valid experimental points extracted for Detector " 
-                << det_id << ". Skipping joint fit." << std::endl;
-      continue; // Skip to next detector
+    std::vector<double> popt;
+    if (FitTrappingParameters(det_exp_points, SimIter->second, out_csv, param_csv, popt, det_id, g_SysErrKeV) == true) {
+      if (NFittedDetectors > 0) CombinedFile << "\n";
+      WriteTrappingParamBlock(CombinedFile, popt, SimIter->second, det_id);
+      ++NFittedDetectors;
     }
-
-    FitTrappingParameters(det_exp_points, g_SimulatedCCEPath.Data(), out_csv, param_csv, det_id, g_SysErrKeV);
   }
+
+  CombinedFile.close();
+  cout << "Wrote trapping parameters for " << NFittedDetectors << " of " << DetectorIDs.size() << " detector(s) to " << combined_csv << endl;
 
   watch.Stop();
   cout << "total time (s): " << watch.CpuTime() << endl;
@@ -862,17 +907,37 @@ TF1* TrappingCorrectionCs137::GeneratePhotopeakFunction()
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-TrappingCorrectionCs137::SimulatedCCE TrappingCorrectionCs137::LoadSimulatedCCE(const std::string& csv_path) {
-  SimulatedCCE sim;
+map<int, TrappingCorrectionCs137::SimulatedCCE> TrappingCorrectionCs137::LoadSimulatedCCE(const std::string& csv_path, bool& HasDetectorHeaders) {
+  map<int, SimulatedCCE> sims;
+  HasDetectorHeaders = false;
   std::ifstream file(csv_path);
 
   if (!file.is_open()) {
     std::cerr << "[Error] Could not open simulation CSV at: " << csv_path << std::endl;
-    return sim;
+    return sims;
   }
+
+  // Lines before the first "### <detector ID>" header belong to detector 0
+  int det_id = 0;
 
   std::string line;
   while (std::getline(file, line)) {
+    // Detector section header: "### <detector ID>"
+    if (line.rfind("###", 0) == 0) {
+      std::stringstream hs(line.substr(3));
+      int new_id;
+      if (hs >> new_id) {
+        det_id = new_id;
+        HasDetectorHeaders = true;
+        if (sims.count(det_id) > 0 && sims[det_id].z_depth_mm.empty() == false) {
+          std::cerr << "[Warning] Detector " << det_id << " appears more than once in " << csv_path << "; appending rows" << std::endl;
+        }
+      } else {
+        std::cerr << "[Warning] Could not read a detector ID from header line: " << line << std::endl;
+      }
+      continue;
+    }
+
     // Skip empty lines, comment lines starting with #, or header text
     if (line.empty() || line[0] == '#' || line.find("z_depth") != std::string::npos) {
       continue;
@@ -891,12 +956,10 @@ TrappingCorrectionCs137::SimulatedCCE TrappingCorrectionCs137::LoadSimulatedCCE(
       }
     }
 
-    // Expecting 5 columns: [z_depth_cm, e_CCE_HV, h_CCE_HV, e_CCE_LV, h_CCE_LV]
+    // Expecting 5 columns: [z_depth_mm, e_CCE_HV, h_CCE_HV, e_CCE_LV, h_CCE_LV]
     if (row.size() == 5) {
-      
-      double z_mm = row[0]; 
-
-      sim.z_depth_mm.push_back(z_mm);
+      SimulatedCCE& sim = sims[det_id];
+      sim.z_depth_mm.push_back(row[0]);
       sim.e_cce_hv.push_back(row[1]);
       sim.h_cce_hv.push_back(row[2]);
       sim.e_cce_lv.push_back(row[3]);
@@ -904,7 +967,11 @@ TrappingCorrectionCs137::SimulatedCCE TrappingCorrectionCs137::LoadSimulatedCCE(
     }
   }
 
-  return sim;
+  for (auto const& [id, sim] : sims) {
+    cout << "Loaded simulation template for Detector " << id << " with " << sim.z_depth_mm.size() << " depth points" << endl;
+  }
+
+  return sims;
 }
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -914,12 +981,6 @@ void TrappingCorrectionCs137::SaveTrappingParamFile(const std::string& output_fi
                                  const SimulatedCCE& sim,
                                  int detector_id) 
 {
-  // Define trapping parameters 
-  double A_hv = popt[0];
-  double A_lv = popt[1];
-  double B    = popt[2];
-  double C    = popt[3];
-
   // Lambda function to write CSV content
   auto write_file_content = [&](const std::string& filepath) {
     std::ofstream csv_file(filepath, std::ios::out | std::ios::trunc);
@@ -927,25 +988,7 @@ void TrappingCorrectionCs137::SaveTrappingParamFile(const std::string& output_fi
       std::cerr << "[Error] Cannot create output file: " << filepath << std::endl;
       return;
     }
-
-    //  Detector ID
-    csv_file << "### " << detector_id << "\n";
-    
-    // Trapping parameters
-    csv_file << A_hv << "," << A_lv << "," << B << "," << C << "\n";
-    
-    // Column Headers 
-    csv_file << "# z_depth_cm,e_CCE_HV,h_CCE_HV,e_CCE_LV,h_CCE_LV\n";
-    
-    // Array Data (Converted Depth from mm to cm)
-    for (size_t i = 0; i < sim.z_depth_mm.size(); ++i) {
-      double sim_z_cm = sim.z_depth_mm[i] / 10.0; // sims are in mm but nuclearizer expects cm
-      csv_file << sim_z_cm << ","
-               << sim.e_cce_hv[i] << ","
-               << sim.h_cce_hv[i] << ","
-               << sim.e_cce_lv[i] << ","
-               << sim.h_cce_lv[i] << "\n";
-    }
+    WriteTrappingParamBlock(csv_file, popt, sim, detector_id);
     csv_file.close();
   };
 
@@ -956,22 +999,47 @@ void TrappingCorrectionCs137::SaveTrappingParamFile(const std::string& output_fi
             << detector_id << " at: " << output_filepath << std::endl;
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void TrappingCorrectionCs137::WriteTrappingParamBlock(std::ostream& out,
+                                                      const std::vector<double>& popt,
+                                                      const SimulatedCCE& sim,
+                                                      int detector_id)
+{
+  //  Detector ID
+  out << "### " << detector_id << "\n";
+
+  // Trapping parameters
+  out << "# A_HV, A_LV, B, C\n";
+  out << popt[0] << "," << popt[1] << "," << popt[2] << "," << popt[3] << "\n";
+
+  // Column Headers 
+  out << "# z_depth_cm,e_CCE_HV,h_CCE_HV,e_CCE_LV,h_CCE_LV\n";
+
+  // Array Data (Converted Depth from mm to cm)
+  for (size_t i = 0; i < sim.z_depth_mm.size(); ++i) {
+    double sim_z_cm = sim.z_depth_mm[i] / 10.0; // sims are in mm but nuclearizer expects cm
+    out << sim_z_cm << ","
+        << sim.e_cce_hv[i] << ","
+        << sim.h_cce_hv[i] << ","
+        << sim.e_cce_lv[i] << ","
+        << sim.h_cce_lv[i] << "\n";
+  }
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void TrappingCorrectionCs137::FitTrappingParameters(const std::vector<ExperimentalPoint>& exp_data,
-  const std::string& sim_csv_path,
+bool TrappingCorrectionCs137::FitTrappingParameters(const std::vector<ExperimentalPoint>& exp_data,
+  const SimulatedCCE& sim,
   const std::string& output_csv_path,
   const std::string& trapping_param_path,
+  std::vector<double>& popt,
   int detector_id,
   double sys_err_kev) 
 {
-// Load Simulation Template
-SimulatedCCE sim = LoadSimulatedCCE(sim_csv_path);
-
 if (sim.z_depth_mm.empty()) {
-std::cerr << "[FATAL] Simulation template is empty or file not found at: " 
-<< sim_csv_path << std::endl;
-return;
+std::cerr << "[Error] Simulation template for Detector " << detector_id << " is empty" << std::endl;
+return false;
 }
 
 /////////////// Data Filters /////////////////////
@@ -1002,7 +1070,7 @@ for (const auto& pt : exp_data) {
 if (det_exp_data.empty()) {
 std::cout << "[Info] No valid data points left after error filtering for Detector " 
 << detector_id << std::endl;
-return;
+return false;
 }
 
 // Set up and sort 1D Interpolation Graphs for Sim CCEs
@@ -1095,7 +1163,7 @@ fitter.SetFCN(fcn);
 bool ok = fitter.FitFCN();
 if (!ok) {
   std::cerr << "[Error] Joint trapping fit failed for Detector " << detector_id << std::endl;
-  return;
+  return false;
 }
 
 ///////////////////////// Printed fit statistics /////////////////////////////////////////
@@ -1106,7 +1174,7 @@ result.Print(std::cout);   // status, EDM, parameter errors
 if (!result.IsValid()) {
   std::cerr << "[Warning] Fit result not valid (status " << result.Status() << ") for Detector " << detector_id << std::endl;
 }
-std::vector<double> popt(4, 0.0);
+popt.assign(4, 0.0);
 for (int i = 0; i < 4; ++i) popt[i] = result.Parameter(i);
 
 // Residual pulls vs. depth: random scatter -> errors underestimated (floor justified), structure -> model or depth mismatch
@@ -1138,6 +1206,7 @@ std::cout << "====================================================\n" << std::en
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 SaveTrappingParamFile(output_csv_path, trapping_param_path, popt, sim, detector_id);
+return true;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////
