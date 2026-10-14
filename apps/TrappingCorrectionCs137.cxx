@@ -456,7 +456,7 @@ bool TrappingCorrectionCs137::Analyze()
     EnergyCalibrator = new MModuleEnergyCalibration();
     EnergyCalibrator->SetFileName(m_EcalFile);
     EnergyCalibrator->SetSlowThresholdCutMode(MSlowThresholdCutModes::e_Fixed);
-    EnergyCalibrator->SetSlowThresholdCutFixedValue(30.0);
+    EnergyCalibrator->SetSlowThresholdCutFixedValue(15.0);
     S->SetModule(EnergyCalibrator, MNumber);
     ++MNumber;
 
@@ -488,6 +488,9 @@ bool TrappingCorrectionCs137::Analyze()
     DepthCalibrator->SetGeometry(Geometry);
     DepthCalibrator->SetCoeffsFileName(m_DepthCoeffsFile);
     DepthCalibrator->SetSplinesFileName(m_DepthSplinesFile);
+    DepthCalibrator->SetUCSDOverride(false);
+    DepthCalibrator->SetMaskMetrologyCorrectionEnable(false);
+    DepthCalibrator->SetAccountForDisabledStrips(false);
     S->SetModule(DepthCalibrator, MNumber);
     ++MNumber;
 
