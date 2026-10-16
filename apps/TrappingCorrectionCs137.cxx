@@ -90,6 +90,9 @@ double g_CsPhotopeak = 661.7;
 // Systematic floor on the photopeak centroid errors (keV), added in quadrature in the joint fit
 double g_SysErrKeV = 0.0;
 
+// Number of depth bins at each detector face excluded from the joint fit (trim_index in depth_helpers.fit_CCE)
+int g_TrimBins = 1;
+
 // Simulation Template Path for Joint Trapping Fitting
 MString g_SimulatedCCEPath = "sim_cce_template.csv";
 
@@ -220,6 +223,7 @@ bool TrappingCorrectionCs137::ParseCommandLine(int argc, char** argv)
   Usage<<"         --splines:   depth calibration CTD->depth splines file (.csv)"<<endl;
   Usage<<"         --sim :   simulated CCE file (.csv)"<<endl;
   Usage<<"         --syserr :   systematic error floor on centroids in keV (default 0)"<<endl;
+  Usage<<"         --trim :   number of depth bins at each face excluded from the trapping fit (default 1)"<<endl;
   Usage<<"         -o:   outfile (default YYYYMMDDHHMMSS)"<<endl;
   Usage<<"         -h:   print this help"<<endl;
   Usage<<endl;
@@ -258,7 +262,7 @@ bool TrappingCorrectionCs137::ParseCommandLine(int argc, char** argv)
 
     // First check if each option has sufficient arguments:
     // Single argument
-    if ((Option == "-i") || (Option == "-o") || (Option == "--emin") || (Option == "--emax") || (Option == "--tcal") || (Option == "-m") || (Option == "--geo") || (Option == "--coeffs") || (Option == "--splines") || (Option == "--sim") || (Option == "--syserr")) {
+    if ((Option == "-i") || (Option == "-o") || (Option == "--emin") || (Option == "--emax") || (Option == "--tcal") || (Option == "-m") || (Option == "--geo") || (Option == "--coeffs") || (Option == "--splines") || (Option == "--sim") || (Option == "--syserr") || (Option == "--trim")) {
       if (!((argc > i+1) && (argv[i+1][0] != '-' || isalpha(argv[i+1][1]) == 0))){
         cout<<"Error: Option "<<argv[i][1]<<" needs a second argument!"<<endl;
         cout<<Usage.str()<<endl;
@@ -318,6 +322,11 @@ bool TrappingCorrectionCs137::ParseCommandLine(int argc, char** argv)
     if (Option == "--syserr") {
       g_SysErrKeV = stod(argv[++i]);
       cout<<"Accepting systematic error floor: "<<g_SysErrKeV<<" keV"<<endl;
+    }
+
+    if (Option == "--trim") {
+      g_TrimBins = stoi(argv[++i]);
+      cout<<"Accepting number of trimmed depth bins per face: "<<g_TrimBins<<endl;
     }
 
     if (Option == "--sim") {
@@ -1055,11 +1064,13 @@ auto lv_ok = [&](const ExperimentalPoint& p) {
 };
 
 std::vector<ExperimentalPoint> det_exp_data;
-int rejected_counts = 0, n_hv = 0, n_lv = 0;
+int rejected_counts = 0, trimmed_counts = 0, n_hv = 0, n_lv = 0;
 
 // Only retain HV or LV data points w acceptable errors
 for (const auto& pt : exp_data) {
   if (pt.det_id != detector_id && detector_id != -1) continue;
+  // Exclude the depth bins at each face, as depth_helpers.fit_CCE does with trim_index
+  if (pt.depth_bin < g_TrimBins || pt.depth_bin >= NDepthBins - g_TrimBins) { trimmed_counts++; continue; }
   const bool h = hv_ok(pt), l = lv_ok(pt);
   if (!h && !l) { rejected_counts++; continue; }   // neither side usable
   det_exp_data.push_back(pt);
@@ -1072,6 +1083,8 @@ std::cout << "[Info] No valid data points left after error filtering for Detecto
 << detector_id << std::endl;
 return false;
 }
+std::cout << "[Info] Detector " << detector_id << ": " << trimmed_counts << " edge depth bins trimmed, "
+          << rejected_counts << " points rejected for their errors" << std::endl;
 
 // Set up and sort 1D Interpolation Graphs for Sim CCEs
 TGraph g_hv_e(sim.z_depth_mm.size(), sim.z_depth_mm.data(), sim.e_cce_hv.data());
@@ -1142,8 +1155,14 @@ ROOT::Math::Functor fcn(chi2_lambda, 4);
 // Configure Fitter
 ROOT::Fit::Fitter fitter;
 
-// Initialize parameters and steps 
-double init_params[4] = {1.0, 1.0, 0.1, 0.1};;
+// Initialize parameters and steps, matching depth_helpers.fit_CCE:
+// A_hv, A_lv start at the largest measured CCE on each side, B at 1 and C at 9
+double max_hv_cce = 0.0, max_lv_cce = 0.0;
+for (const auto& pt : det_exp_data) {
+  if (hv_ok(pt)) max_hv_cce = std::max(max_hv_cce, pt.hv_cce);
+  if (lv_ok(pt)) max_lv_cce = std::max(max_lv_cce, pt.lv_cce);
+}
+double init_params[4] = {(n_hv > 0) ? max_hv_cce : 1.0, (n_lv > 0) ? max_lv_cce : 1.0, 1.0, 9.0};
 double init_steps[4]  = {1e-4, 1e-4, 0.05, 0.05};
 
 fitter.Config().SetMinimizer("Minuit2", "Migrad");
@@ -1151,11 +1170,13 @@ fitter.Config().MinimizerOptions().SetStrategy(2);
 fitter.Config().MinimizerOptions().SetTolerance(1e-4);
 fitter.Config().MinimizerOptions().SetMaxFunctionCalls(100000);
 fitter.Config().SetParamsSettings(4, init_params, init_steps);
+// MINOS errors on all parameters, as in depth_helpers.fit_CCE
+fitter.Config().SetMinosErrors(true);
 
-fitter.Config().ParSettings(0).SetLimits(0.9, 1.1);
-fitter.Config().ParSettings(1).SetLimits(0.9, 1.1);
-fitter.Config().ParSettings(2).SetLimits(0.0, 5.0);
-fitter.Config().ParSettings(3).SetLimits(0.0, 2.0);
+// As in depth_helpers.fit_CCE: A_hv, A_lv unbounded, B and C only required to be >= 0.
+// No upper limits, so strongly damaged detectors (e.g. C > 2 after proton irradiation) are not pinned at a bound.
+fitter.Config().ParSettings(2).SetLowerLimit(0.0);
+fitter.Config().ParSettings(3).SetLowerLimit(0.0);
 
 fitter.SetFCN(fcn);
 
