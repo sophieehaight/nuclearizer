@@ -163,7 +163,7 @@ private:
   void InitializeDepthBins(MModuleDepthCalibration* DepthCalibrator);
 
   // Depth bins
-  static const int NDepthBins = 30; // Set to your desired bin count
+  static const int NDepthBins = 20; // Set to your desired bin count
   map<int, vector<double>> m_DepthBinEdges; // [DetID] -> NDepthBins + 1 edges in cm
 
   bool m_Interrupt;
@@ -404,6 +404,10 @@ bool TrappingCorrectionCs137::Analyze()
     return false;
   }
 
+  // MModuleDepthCalibration::Initialize() looks up the energy calibration among the supervisor's
+  // *available* modules, which only MAssembly registers -- register one here for this standalone app
+  MSupervisor::GetSupervisor()->AddAvailableModule(new MModuleEnergyCalibration());
+
   // Read in the input files and make a list of hdf5 files to calibrate
   if ((InputFile.GetSubString(InputFile.Length() - 4)) == "hdf5") {
     HDFNames.push_back(InputFile);
@@ -475,7 +479,7 @@ bool TrappingCorrectionCs137::Analyze()
     EnergyCalibrator = new MModuleEnergyCalibration();
     EnergyCalibrator->SetFileName(m_EcalFile);
     EnergyCalibrator->SetSlowThresholdCutMode(MSlowThresholdCutModes::e_Fixed);
-    EnergyCalibrator->SetSlowThresholdCutFixedValue(15.0);
+    EnergyCalibrator->SetSlowThresholdCutFixedValue(30.0);
     S->SetModule(EnergyCalibrator, MNumber);
     ++MNumber;
 
