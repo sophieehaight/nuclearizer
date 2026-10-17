@@ -71,7 +71,8 @@ class MGUIOptionsTrappingCorrection : public MGUIOptions
  private:
 
   //! Select which file to load
-  MGUIEFileSelector* m_SimCCEFileSelector;
+
+  MGUIEFileSelector* m_TrappingCorrectionFileSelector;
 
 
 #ifdef ___CLING___

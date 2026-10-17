@@ -67,11 +67,11 @@ void MGUIOptionsTrappingCorrection::Create()
 {
   PreCreate();
 
-  m_SimCCEFileSelector = new MGUIEFileSelector(m_OptionsFrame, "Select a trapping parameter file:",
-      dynamic_cast<MModuleTrappingCorrection*>(m_Module)->GetSimCCEFileName());
-  m_SimCCEFileSelector->SetFileType("trapping parameters", "*.csv");
+  m_TrappingCorrectionFileSelector = new MGUIEFileSelector(m_OptionsFrame, "Select a trapping parameter file:",
+      dynamic_cast<MModuleTrappingCorrection*>(m_Module)->GetTrappingCorrectionFileName());
+  m_TrappingCorrectionFileSelector->SetFileType("trapping parameters", "*.csv");
   TGLayoutHints* LabelLayout = new TGLayoutHints(kLHintsTop | kLHintsCenterX | kLHintsExpandX, 10, 10, 10, 10);
-  m_OptionsFrame->AddFrame(m_SimCCEFileSelector, LabelLayout);
+  m_OptionsFrame->AddFrame(m_TrappingCorrectionFileSelector, LabelLayout);
 
   TGLayoutHints* RBLayout = new TGLayoutHints(kLHintsLeft | kLHintsTop, 40, 10, 2, 0);
   TGLayoutHints* RBOptionLayout = new TGLayoutHints(kLHintsLeft | kLHintsTop, 60, 10, 2, 0);
@@ -89,7 +89,7 @@ bool MGUIOptionsTrappingCorrection::OnApply()
 {
  // Modify this to store the data in the module!
 
-  dynamic_cast<MModuleTrappingCorrection*>(m_Module)->SetSimCCEFileName(m_SimCCEFileSelector->GetFileName());
+  dynamic_cast<MModuleTrappingCorrection*>(m_Module)->SetTrappingCorrectionFileName(m_TrappingCorrectionFileSelector->GetFileName());
 
   return true;
 }

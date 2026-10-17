@@ -81,9 +81,9 @@ class MHit
 
   // Local Position:
 
-  //! Set the local/raw position of the hit 
+  //! Set the position of the hit in local detector coordinates 
   void SetLocalPosition(const MVector& Position) { m_LocalPosition = Position; }
-  //! Return the local/raw position of the hit
+  //! Return the position of the hit in local detector coordinates
   MVector GetLocalPosition() const { return m_LocalPosition; }
 
 
