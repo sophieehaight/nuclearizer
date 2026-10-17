@@ -199,14 +199,14 @@ bool MModuleTrappingCorrection::AnalyzeEvent(MReadOutAssembly* Event)
 
         double correctedLVEnergy = rawLVEnergy;
         if (IsDepthOutofBounds == false) {
-          correctedLVEnergy = GetSimBasedCorrectedEnergy(DepthVal, rawLVEnergy, detData.m_Depths, detData.m_CCEs_LV_e, detData.m_CCEs_LV_h, detData.m_ParamB, detData.m_ParamC);
-        } else {
-          if (DepthVal < MinParamDepth) {
-            correctedLVEnergy = GetSimBasedCorrectedEnergy(MinParamDepth, rawLVEnergy, detData.m_Depths, detData.m_CCEs_LV_e, detData.m_CCEs_LV_h, detData.m_ParamB, detData.m_ParamC);
-          } else if (DepthVal > MaxParamDepth) {
-            correctedLVEnergy = GetSimBasedCorrectedEnergy(MaxParamDepth, rawLVEnergy, detData.m_Depths, detData.m_CCEs_LV_e, detData.m_CCEs_LV_h, detData.m_ParamB, detData.m_ParamC); 
-          }
-        }
+          correctedLVEnergy = GetSimBasedCorrectedEnergy(DepthVal, rawLVEnergy, detData.m_Depths, detData.m_CCEs_LV_e, detData.m_CCEs_LV_h, detData.m_ParamB, detData.m_ParamC);}
+        // } else {
+        //   if (DepthVal < MinParamDepth) {
+        //     correctedLVEnergy = GetSimBasedCorrectedEnergy(MinParamDepth, rawLVEnergy, detData.m_Depths, detData.m_CCEs_LV_e, detData.m_CCEs_LV_h, detData.m_ParamB, detData.m_ParamC);
+        //   } else if (DepthVal > MaxParamDepth) {
+        //     correctedLVEnergy = GetSimBasedCorrectedEnergy(MaxParamDepth, rawLVEnergy, detData.m_Depths, detData.m_CCEs_LV_e, detData.m_CCEs_LV_h, detData.m_ParamB, detData.m_ParamC); 
+        //   }
+        // }
 
         LVSH->SetEnergy(correctedLVEnergy);    
 
@@ -245,14 +245,14 @@ bool MModuleTrappingCorrection::AnalyzeEvent(MReadOutAssembly* Event)
         }
         double correctedHVEnergy = rawHVEnergy;
         if (IsDepthOutofBounds == false) {
-          correctedHVEnergy = GetSimBasedCorrectedEnergy( DepthVal, rawHVEnergy, detData.m_Depths, detData.m_CCEs_HV_e, detData.m_CCEs_HV_h, detData.m_ParamB, detData.m_ParamC);
-        } else {
-          if (DepthVal < MinParamDepth) {
-            correctedHVEnergy = GetSimBasedCorrectedEnergy(MinParamDepth, rawHVEnergy, detData.m_Depths, detData.m_CCEs_HV_e, detData.m_CCEs_HV_h, detData.m_ParamB, detData.m_ParamC);
-          } else if (DepthVal > MaxParamDepth) {
-            correctedHVEnergy = GetSimBasedCorrectedEnergy(MaxParamDepth, rawHVEnergy, detData.m_Depths, detData.m_CCEs_HV_e, detData.m_CCEs_HV_h, detData.m_ParamB, detData.m_ParamC); 
-          }
-        }
+          correctedHVEnergy = GetSimBasedCorrectedEnergy( DepthVal, rawHVEnergy, detData.m_Depths, detData.m_CCEs_HV_e, detData.m_CCEs_HV_h, detData.m_ParamB, detData.m_ParamC);}
+        // } else {
+        //   if (DepthVal < MinParamDepth) {
+        //     correctedHVEnergy = GetSimBasedCorrectedEnergy(MinParamDepth, rawHVEnergy, detData.m_Depths, detData.m_CCEs_HV_e, detData.m_CCEs_HV_h, detData.m_ParamB, detData.m_ParamC);
+        //   } else if (DepthVal > MaxParamDepth) {
+        //     correctedHVEnergy = GetSimBasedCorrectedEnergy(MaxParamDepth, rawHVEnergy, detData.m_Depths, detData.m_CCEs_HV_e, detData.m_CCEs_HV_h, detData.m_ParamB, detData.m_ParamC); 
+        //   }
+        // }
 
         HVSH->SetEnergy(correctedHVEnergy);    
 
