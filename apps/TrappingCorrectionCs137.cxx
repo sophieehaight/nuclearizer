@@ -63,11 +63,9 @@ using namespace std;
 #include "MModuleStripPairingChiSquare.h"
 #include "MModuleTACCalibration.h"
 #include "MAssembly.h"
-#include "MModuleDepthCalibration.h"
 
 
 double g_MinCTD = -250;
-// TO DO: Explore widening the CTD range 
 double g_MaxCTD = 250;
 int g_MinCounts = 1000;
 int g_HVStrips = 64;
@@ -137,6 +135,8 @@ public:
 
   TF1* GeneratePhotopeakFunction();
 
+  MStripHit* GetDominantStrip(vector<MStripHit*>& Strips, double& EnergyFraction);
+
   private:
   //! True, if the analysis needs to be interrupted
   bool m_Interrupt;
@@ -144,6 +144,7 @@ public:
   MString m_FileName;
   MString m_EcalFile;
   MString m_TACCalFile;
+  MString m_TACCalibrationFile;
   MString m_StripMapFile;
   //! output file names
   MString m_OutFile;
@@ -186,13 +187,14 @@ bool TrappingCorrectionCs137::ParseCommandLine(int argc, char** argv)
 {
   ostringstream Usage;
   Usage<<endl;
-  Usage<<"  Usage: TrappingCorrectionCs137 <options>"<<endl;
+  Usage<<"  Usage: TrappingCorrection <options>"<<endl;
   Usage<<"    General options:"<<endl;
   Usage<<"         -i:   input file name (.hdf5 or .txt with list of hdf5s)"<<endl;
   Usage<<"         --emin:   minimum Event energy (default 600 keV)"<<endl;
   Usage<<"         --emax:   maximum Event energy (default 700 kev)"<<endl;
   Usage<<"         -e:   energy calibration file (.ecal)"<<endl;
   Usage<<"         --tcal:   TAC calibration file"<<endl;
+  Usage<<"         --tcut:   TAC cut file"<<endl;
   Usage<<"         -p:   do pixel-by-pixel correction"<<endl;
   Usage<<"         -m:   strip map file name (.map)"<<endl;
   Usage<<"         -g:   greedy strip pairing (default is chi-square)"<<endl;
@@ -236,7 +238,7 @@ bool TrappingCorrectionCs137::ParseCommandLine(int argc, char** argv)
 
     // First check if each option has sufficient arguments:
     // Single argument
-    if ((Option == "-i") || (Option == "-o") || (Option == "--emin") || (Option == "--emax") || (Option == "--tcal") || (Option == "-m") || (Option == "--ctdmin") || (Option == "--ctdmax")) {
+    if ((Option == "-i") || (Option == "-o") || (Option == "--emin") || (Option == "--emax") || (Option == "--tcal") || (Option == "--tcut") || (Option == "-m") || (Option == "--ctdmin") || (Option == "--ctdmax")) {
       if (!((argc > i+1) && (argv[i+1][0] != '-' || isalpha(argv[i+1][1]) == 0))){
         cout<<"Error: Option "<<argv[i][1]<<" needs a second argument!"<<endl;
         cout<<Usage.str()<<endl;
@@ -244,11 +246,11 @@ bool TrappingCorrectionCs137::ParseCommandLine(int argc, char** argv)
       }
     }  
 
-    /// Then fulfill the options:
+    // Then fulfill the options:
     if (Option == "-i") {
       m_FileName = argv[++i];
       cout<<"Accepting file name: "<<m_FileName<<endl;
-    }
+    } 
 
     if (Option == "-e") {
       m_EcalFile = argv[++i];
@@ -266,6 +268,11 @@ bool TrappingCorrectionCs137::ParseCommandLine(int argc, char** argv)
     if (Option == "--tcal") {
       m_TACCalFile = argv[++i];
       cout<<"Accepting file name: "<<m_TACCalFile<<endl;
+    } 
+
+    if (Option == "--tcut") {
+      m_TACCalibrationFile = argv[++i];
+      cout<<"Accepting file name: "<<m_TACCalibrationFile<<endl;
     } 
 
     if (Option == "-o"){
@@ -318,7 +325,7 @@ bool TrappingCorrectionCs137::Analyze()
 
   if (m_Interrupt == true) return false;
 
-  // [CTD][DetID][] HV Energy, LV Energy] for full detector values
+  // [CTD, HV Energy, LV Energy] for full detector values
  map<int, map<int, vector<double>>> FullDetEndpoints;
 
   // Store the input files
@@ -326,12 +333,10 @@ bool TrappingCorrectionCs137::Analyze()
   FileNames.push_back(m_FileName);
   cout << "file name stored" << endl;
 
-  
   MString InputFile = FileNames[0];
   cout << " input file stored as: " << InputFile << endl;
   vector<MString> HDFNames;
 
-  // Enable sum of weights squared for TH1 by default
   TH1::SetDefaultSumw2();
 
   // Detector-level maps organized by [CTDBin][DetID]
@@ -349,7 +354,6 @@ bool TrappingCorrectionCs137::Analyze()
     MFile F;
     if (F.Open(InputFile) == false) {
       cout << "Error: Failed to open input file." << endl;
-      return false;
     } else {
       MString Line;
       while (F.ReadLine(Line)) {
@@ -359,14 +363,12 @@ bool TrappingCorrectionCs137::Analyze()
             HDFNames.push_back(Trimmed);
           } else {
             cout << "Error: Could not find file " << Trimmed << endl;
-            return false;
           }
         }
       }
     }
   } else {
     cout << "Error: Unrecognized file format: " << InputFile << endl;
-    return false;
   }
 
   // Analyze all the data and fill in the histograms
@@ -382,7 +384,6 @@ bool TrappingCorrectionCs137::Analyze()
     MModuleTACCalibration* TACCalibrator;
     MModuleEnergyCalibration* EnergyCalibrator;
     MModuleEventFilter* EventFilter;
-    MModuleDepthCalibration* DepthCalibrator;
 
     unsigned int MNumber = 0;
     cout << "Creating HDF5 loader" << endl;
@@ -396,13 +397,13 @@ bool TrappingCorrectionCs137::Analyze()
     cout << "Creating TAC calibrator" << endl;
     TACCalibrator = new MModuleTACCalibration();
     TACCalibrator->SetTACCalFileName(m_TACCalFile);
+    // TACCalibrator->SetTACCalFileName(m_TACCalibrationFile);
     S->SetModule(TACCalibrator, MNumber);
     ++MNumber;
     
     cout << "Creating energy calibrator" << endl;
     EnergyCalibrator = new MModuleEnergyCalibration();
     EnergyCalibrator->SetFileName(m_EcalFile);
-    EnergyCalibrator->SetSlowThresholdCutFixedValue(15.0);
     S->SetModule(EnergyCalibrator, MNumber);
     ++MNumber;
 
@@ -415,7 +416,7 @@ bool TrappingCorrectionCs137::Analyze()
     EventFilter->SetMinimumHits(0);
     EventFilter->SetMaximumHits(100);
     EventFilter->SetMinimumTotalEnergy(m_MinEnergy);
-    EventFilter->SetMaximumTotalEnergy(m_MaxEnergy ); // Multiply by 2 because this is the event-level energy, i.e. sum over both sides
+    EventFilter->SetMaximumTotalEnergy(m_MaxEnergy * 2); 
     S->SetModule(EventFilter, MNumber);
     ++MNumber;
     
@@ -427,12 +428,6 @@ bool TrappingCorrectionCs137::Analyze()
       Pairing = new MModuleStripPairingChiSquare();
     }
     S->SetModule(Pairing, MNumber);
-
-    // Create depth calibration module 
-    //Only to import predefined functions, not for depth
-    DepthCalibrator = new MModuleDepthCalibration();
-
-
 
     cout<<"Initializing Loader"<<endl;
     if (Loader->Initialize() == false) return false;
@@ -492,10 +487,10 @@ bool TrappingCorrectionCs137::Analyze()
                 
                 double HVEnergyFraction = 0;
                 double LVEnergyFraction = 0;
-                MStripHit* HVSH = DepthCalibrator->GetDominantStrip(HVStrips, HVEnergyFraction); 
-                MStripHit* LVSH = DepthCalibrator->GetDominantStrip(LVStrips, LVEnergyFraction);
+                MStripHit* HVSH = GetDominantStrip(HVStrips, HVEnergyFraction); 
+                MStripHit* LVSH = GetDominantStrip(LVStrips, LVEnergyFraction);
                 
-                if ((LVSH->HasFastTiming() == true) && (HVSH->HasFastTiming() == true) && (LVSH != nullptr) && (HVSH != nullptr)) {
+                if ((LVSH->HasCalibratedTiming() == true) && (HVSH->HasCalibratedTiming() == true) && (LVSH != nullptr) && (HVSH != nullptr)) {
                   
                   double CTD = LVSH->GetTiming() - HVSH->GetTiming();
                   int CTDBin = GetCTDBin(CTD);
@@ -529,7 +524,7 @@ bool TrappingCorrectionCs137::Analyze()
     }
   }
   
-  // Store depth binned fit results in an output file 
+  // Place this outside/before your CTD bin and Detector loops!
   ofstream MasterFitFile;
   MasterFitFile.open(m_OutFile + MString("_All_CTDBin_FitResults.txt"));
   MasterFitFile << "======================================================================" << endl;
@@ -617,7 +612,7 @@ bool TrappingCorrectionCs137::Analyze()
     }
   }
 
-  // Close output parameter file
+  // Place this at the absolute end of your Analyze() function
   MasterFitFile.close();
   cout << "Master fit results log saved successfully." << endl;
 
@@ -757,6 +752,30 @@ TF1* TrappingCorrectionCs137::GeneratePhotopeakFunction()
 TrappingCorrectionCs137* g_Prg = 0;
 int g_NInterruptCatches = 1;
 
+MStripHit* TrappingCorrectionCs137::GetDominantStrip(vector<MStripHit*>& Strips, double& EnergyFraction)
+{
+  double MaxEnergy = -numeric_limits<double>::max(); 
+  double TotalEnergy = 0.0;
+  MStripHit* MaxStrip = nullptr;
+
+  // Iterate through strip hits and get the strip with highest energy
+  for (const auto SH : Strips) {
+    double Energy = SH->GetEnergy();
+    TotalEnergy += Energy;
+    if (Energy > MaxEnergy) {
+      MaxStrip = SH;
+      MaxEnergy = Energy;
+    }
+  }
+  if (TotalEnergy == 0) {
+    EnergyFraction = 0;
+  } else {
+    EnergyFraction = MaxEnergy/TotalEnergy;
+  }
+  return MaxStrip;
+}
+
+
 ////////////////////////////////////////////////////////////////////////////////
 
 
@@ -783,7 +802,7 @@ int main(int argc, char** argv)
   signal(SIGINT, CatchSignal);
 
   // Initialize global MEGALIB variables, especially mgui, etc.
-  MGlobal::Initialize("TrappingCorrectionCs137", "A standalone program to determine CTD-dependent shifts of the Cs137 peak");
+  MGlobal::Initialize("Standalone", "a standalone example program");
 
   TApplication TrappingCorrectionApp("TrappingCorrectionApp", 0, 0);
 
