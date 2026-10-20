@@ -27,6 +27,7 @@
 #include "MModuleTrappingCorrection.h"
 
 // Standard libs:
+#include <set>
 
 // ROOT libs:
 #include "TMath.h"
@@ -170,6 +171,9 @@ bool MModuleTrappingCorrection::AnalyzeEvent(MReadOutAssembly* Event)
       else HVStrips.push_back(SH);
     }
 
+     // Track which strips have been corrected
+     std::set<MStripHit*> CorrectedStripHits;
+
     // To account for charge sharing, get the dominant strip in each category and its energy fraction
     double LVEnergyFraction = 0.0;
     double HVEnergyFraction = 0.0;
@@ -177,7 +181,7 @@ bool MModuleTrappingCorrection::AnalyzeEvent(MReadOutAssembly* Event)
     MStripHit* HVSH = m_DepthCalibration->GetDominantStrip(HVStrips, HVEnergyFraction); 
   
     // --- Low Voltage (LV) Side ---
-    if (LVSH != nullptr) {
+    if (LVSH != nullptr && CorrectedStripHits.insert(LVSH).second == true) {
       int detID = LVSH->GetDetectorID();
       // Iterate through detector param map to look up pre-loaded parameters for this detector
       auto it = m_DetectorParamMap.find(detID);
@@ -222,7 +226,7 @@ bool MModuleTrappingCorrection::AnalyzeEvent(MReadOutAssembly* Event)
     }
 
     // --- High Voltage (HV) Side ---
-    if (HVSH != nullptr) {
+    if (HVSH != nullptr && CorrectedStripHits.insert(HVSH).second == true) {
             int detID = HVSH->GetDetectorID();
       // Iterate through detector param map to look up pre-loaded parameters for this detector
       auto it = m_DetectorParamMap.find(detID);
@@ -254,7 +258,7 @@ bool MModuleTrappingCorrection::AnalyzeEvent(MReadOutAssembly* Event)
             correctedHVEnergy = GetSimBasedCorrectedEnergy(MaxParamDepth, rawHVEnergy, detData.m_Depths, detData.m_CCEs_HV_e, detData.m_CCEs_HV_h, detData.m_ParamB, detData.m_ParamC); 
           }
         }
-
+      
         HVSH->SetEnergy(correctedHVEnergy);    
 
         if (HasExpos() == true) {
