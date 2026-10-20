@@ -143,8 +143,9 @@ void MModuleTrappingCorrection::CreateExpos()
 
 bool MModuleTrappingCorrection::AnalyzeEvent(MReadOutAssembly* Event) 
 {
-  if (Event->GetGuardRingVeto() || m_DetectorParamMap.empty()) {
-    return false;
+  if (Event->GetGuardRingVeto()) {
+    Event->SetAnalysisProgress(MAssembly::c_TrappingCorrection);
+    return true;
   } 
 
   for (unsigned int i = 0; i < Event->GetNHits(); ++i) {
@@ -360,7 +361,7 @@ bool MModuleTrappingCorrection::LoadTrappingCorrectionFile(MString FileName)
     if (g_Verbosity >= c_Error) {
       cout << m_XmlTag << ": ERROR: Obtained an empty charge trapping parameter map when reading CCE file " << FileName << endl;
     }
-    return false;
+    return true;
   }
 
   return true;
