@@ -181,6 +181,7 @@ bool MModuleTrappingCorrection::AnalyzeEvent(MReadOutAssembly* Event)
     MStripHit* HVSH = m_DepthCalibration->GetDominantStrip(HVStrips, HVEnergyFraction); 
   
     // --- Low Voltage (LV) Side ---
+
     if (LVSH != nullptr && CorrectedStripHits.insert(LVSH).second == true) {
       int detID = LVSH->GetDetectorID();
       // Iterate through detector param map to look up pre-loaded parameters for this detector
@@ -258,7 +259,7 @@ bool MModuleTrappingCorrection::AnalyzeEvent(MReadOutAssembly* Event)
             correctedHVEnergy = GetSimBasedCorrectedEnergy(MaxParamDepth, rawHVEnergy, detData.m_Depths, detData.m_CCEs_HV_e, detData.m_CCEs_HV_h, detData.m_ParamB, detData.m_ParamC); 
           }
         }
-      
+
         HVSH->SetEnergy(correctedHVEnergy);    
 
         if (HasExpos() == true) {
@@ -365,7 +366,7 @@ bool MModuleTrappingCorrection::LoadTrappingCorrectionFile(MString FileName)
     if (g_Verbosity >= c_Error) {
       cout << m_XmlTag << ": ERROR: Obtained an empty charge trapping parameter map when reading CCE file " << FileName << endl;
     }
-    return true;
+    return false;
   }
 
   return true;
