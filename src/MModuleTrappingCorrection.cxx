@@ -319,7 +319,7 @@ bool MModuleTrappingCorrection::LoadTrappingCorrectionFile(MString FileName)
     Line = Line.Strip();
     if (Line.IsEmpty() == true) continue;
 
-    // Detect section header: "### <Detector ID>"
+    // Detect section header: "### <detector_ID>"
     if (Line.BeginsWith("###")) {
       std::vector<MString> Tokens = Line.Tokenize(" ");
       if (Tokens.size() >= 2) {
